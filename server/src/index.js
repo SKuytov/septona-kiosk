@@ -17,6 +17,20 @@ app.use(compression());
 app.use(cors({ origin: true, exposedHeaders: ['ETag'] }));
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true }));
+// An <iframe>/<embed> preview cannot set an Authorization header, so inline PDF
+// previews may pass the same JWT as `?token=`. Restricted to GETs on the version
+// file route so a leaked URL cannot be replayed against any mutating endpoint.
+app.use((req, _res, next) => {
+  if (
+    req.method === 'GET' &&
+    !req.headers.authorization &&
+    typeof req.query.token === 'string' &&
+    /^\/api\/documents\/[^/]+\/versions\/[^/]+\/file$/.test(req.path)
+  ) {
+    req.headers.authorization = `Bearer ${req.query.token}`;
+  }
+  next();
+});
 app.use(loadUser);
 
 app.get('/api/health', async (_req, res) => {
