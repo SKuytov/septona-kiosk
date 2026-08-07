@@ -5,6 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <meta name="theme-color" content="#26307A" />
     <title>СЕПТОНА — Документи</title>
+
+    <!--
+      Blocking, deliberately before the module bundle: patches ECMAScript APIs missing from
+      older Android WebViews, which the PDF engine needs. Ordering is the point, so this
+      cannot be an import inside the bundle. See public/compat.js.
+    -->
+    <script src="./compat.js"></script>
   </head>
   <body>
     <div id="root"></div>

@@ -634,7 +634,7 @@ mark { background: #fde68a; color: var(--sep-ink); border-radius: 3px; padding: 
   }
   /* Explicit order so wrapping puts logo + title + clock on the first row and
      drops the action buttons onto the second, rather than stranding the clock. */
-  .hdr__logo { order: 1; }
+  .hdr__logo-hit { order: 1; }
   .hdr__titles { order: 2; flex: 1 1 60%; }
   .hdr__clock { order: 3; }
   .hdr__actions { order: 4; }
@@ -669,4 +669,319 @@ mark { background: #fde68a; color: var(--sep-ink); border-radius: 3px; padding: 
 /* Portrait on an actual phone-sized screen keeps the single column. */
 @media (orientation: portrait) and (max-width: 699px) {
   .grid { grid-template-columns: 1fr; }
+}
+
+
+/* ============================================================ service gesture
+   The press-and-hold that opens the maintenance screen is bound to this wrapper,
+   never to the logo image. Android WebView runs its own long-press behaviour over
+   an <img> -- the selection callout and the image drag -- and when it takes the
+   gesture over it fires pointercancel, which is what made the hold do nothing at
+   all on the panel. Every declaration here is load-bearing:
+
+     touch-action: none        stops the hold being treated as the start of a scroll
+     user-select / callout     stops the text-selection and image menus
+     user-drag                 stops the image being dragged out from under us
+     tap-highlight             removes the blue flash on a long press
+*/
+.hdr__logo-hit {
+  position: relative;
+  display: block;
+  flex: 0 0 auto;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-user-drag: none;
+  -webkit-tap-highlight-color: transparent;
+  cursor: pointer;
+}
+/* Events must reach the wrapper, so the image itself is transparent to them. */
+.hdr__logo-hit > .hdr__logo { pointer-events: none; }
+
+/* Feedback while the hold is counting. Without it a hold that is not working looks
+   identical to one that is, which is how the fault was originally reported. */
+.hdr__hold {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 5px;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(26, 31, 54, 0.16);
+  overflow: hidden;
+}
+.hdr__hold-bar {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--sep-blue);
+  transition: width 0.08s linear;
+}
+
+/* ============================================================ split reading view
+   Wide screens -- the wall panel in portrait and an 11" tablet -- put the document
+   list on the left and the open document on the right. The breakpoint lives in
+   src/lib/useMediaQuery.ts; the classes below are applied by App, so the two cannot
+   fall out of step the way a duplicated media query would. */
+.board {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.main--split {
+  display: flex;
+  align-items: stretch;
+}
+/* Percentage with explicit bounds rather than clamp(): the panel's WebView is not
+   the newest and this needs no fallback path. */
+.main--split > .board {
+  flex: 0 0 34%;
+  min-width: 286px;
+  max-width: 430px;
+  height: auto;
+  border-right: 1px solid var(--sep-line);
+}
+.main--split.main--nolist > .board { display: none; }
+
+.split__pane {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  background: #2c3142;
+}
+
+/* One card per row in the narrow column, and the category header shrinks with it.
+   These beat the responsive rules below on specificity, not on order. */
+.main--split .grid { grid-template-columns: 1fr; gap: 10px; }
+.main--split .scroll { padding: 16px; }
+.main--split .cat-hd { gap: 12px; margin-bottom: 14px; }
+.main--split .cat-hd__ic { width: 42px; height: 42px; border-radius: 12px; }
+.main--split .cat-hd__t { font-size: 1.16rem; }
+.main--split .cat-hd__s { font-size: 0.8rem; }
+
+.card--compact {
+  min-height: 0;
+  padding: 13px 15px;
+  gap: 8px;
+}
+.card--compact .card__ic { width: 36px; height: 36px; border-radius: 9px; }
+.card--compact .card__t {
+  font-size: 0.97rem;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+/* The metadata row is the first thing to go: in a 300px column it wraps to three
+   lines and buries the titles. Language and offline state are what still matter. */
+.card--compact .card__meta { gap: 6px; font-size: 0.72rem; }
+.card--compact .card__meta .chip { height: 22px; padding: 0 8px; }
+.card--compact .card__meta .chip--cat,
+.card--compact .card__meta .chip:not([class*='--']) { display: none; }
+
+/* The document being read is marked in the list, so the two panes clearly relate. */
+.card--on {
+  border-color: var(--sep-blue);
+  background: var(--sep-blue-pale);
+  box-shadow: 0 0 0 2px var(--sep-blue) inset;
+}
+.card--on .card__t { color: var(--sep-navy); }
+
+/* ============================================================ viewer variants */
+/* In the pane it is an ordinary flex child, not a fixed overlay. */
+.vw--pane {
+  position: relative;
+  inset: auto;
+  top: auto; right: auto; bottom: auto; left: auto;
+  z-index: 1;
+  flex: 1 1 auto;
+  min-width: 0;
+  animation: none;
+}
+.vw--pane .vw__bar,
+.vw--pane .vw__foot { height: 66px; }
+.vw--pane .vw__stage { padding: 16px; }
+
+/* Full screen is a CSS class rather than the Fullscreen API: on Android WebView the
+   API is inconsistently permitted and can fail silently, while this cannot. */
+.vw--full {
+  position: fixed;
+  inset: 0;
+  top: 0; right: 0; bottom: 0; left: 0;
+  z-index: 80;
+  max-width: none;
+}
+.vw--full .vw__bar,
+.vw--full .vw__foot { height: 78px; }
+
+/* Panning and pinching are implemented in src/lib/useZoomPan.ts, which needs both
+   pointers delivered to it rather than consumed as a native scroll. That is what
+   touch-action: none buys, and it is why panning is done by script from here on. */
+.vw__stage {
+  touch-action: none;
+  overscroll-behavior: contain;
+}
+
+.vw__pct {
+  min-width: 68px;
+  text-align: center;
+  font-size: 0.95rem;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+/* Marks the list toggle as "list is showing". */
+.vbtn--on { background: rgba(255, 255, 255, 0.3); }
+
+.vw__errt {
+  font-size: 1.18rem;
+  font-weight: 700;
+  color: #fff;
+  text-align: center;
+  max-width: 620px;
+}
+.vw__errh {
+  text-align: center;
+  max-width: 560px;
+  line-height: 1.55;
+  color: rgba(255, 255, 255, 0.78);
+}
+.vw__errd {
+  margin-top: 2px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8rem;
+  color: rgba(255, 255, 255, 0.6);
+  text-align: center;
+  max-width: 620px;
+  word-break: break-word;
+}
+
+/* Two forms of the page indicator; the long one is the default and the narrow-screen
+   block below swaps to the short one. These must stay ABOVE that media query: same
+   specificity means later rules win, and declaring the defaults afterwards silently
+   undid the override. */
+.vw__pg-short { display: none; }
+.vw__pg-long { display: inline; }
+
+/* ---- viewer on a phone
+   Below the split breakpoint the toolbars have to hold the same controls in far
+   less width, so the button captions drop and only the icons remain. */
+@media (max-width: 759px) {
+  .vw__bar { height: 68px; gap: 8px; padding: 0 10px; }
+  /*
+    The footer holds six controls. At 412px they did not fit, and because the row is
+    centred the overflow spilled out of both ends: the previous-page button was cut off
+    on the left and the next-page arrow was painted on top of the page number. Allowing
+    the row to wrap means a screen too narrow for one row gets two, instead of controls
+    landing on top of each other.
+  */
+  .vw__foot {
+    height: auto;
+    min-height: 68px;
+    flex-wrap: wrap;
+    row-gap: 8px;
+    gap: 7px;
+    padding: 9px 10px;
+  }
+  .vbtn { height: 50px; min-width: 50px; padding: 0 11px; gap: 6px; }
+  .vbtn__lbl { display: none; }
+  /* The short form of the page indicator; see the comment in PdfViewer.tsx. */
+  .vw__pg { min-width: 0; font-size: 0.95rem; padding: 0 2px; }
+  .vw__pg-long { display: none; }
+  .vw__pg-short { display: inline; }
+  .vw__pct { min-width: 52px; font-size: 0.88rem; }
+  .vw__sep { display: none; }
+  .vw__stage { padding: 10px; }
+  .vw__t { font-size: 0.98rem; }
+  .vw__s { font-size: 0.72rem; }
+  .vw__errt { font-size: 1.05rem; }
+  .vw__errh, .vw__errd { padding: 0 16px; }
+}
+
+
+/* ============================================================ centred page
+   The stage top-aligns its content so that a page taller than the viewport scrolls
+   from the top. When the page is shorter -- which it usually is on a 2:1 portrait
+   panel showing an A4 sheet -- that left a large empty band underneath it. An auto
+   margin centres the page when it fits and still allows scrolling when it does not,
+   which `align-items: center` on its own would not. */
+.vw__canvas { margin: auto; }
+
+/* ============================================================ reading layout
+   With a document open the board becomes a way of getting to the next document rather
+   than the thing being looked at, so the header and the category rail hand some of
+   their height to the page. This matters most on a tablet in portrait, where the two
+   bars were taking a third of the screen before the document began. */
+.app--reading .hdr {
+  height: auto;
+  flex: 0 0 auto;
+  padding-top: 10px;
+  padding-bottom: 10px;
+  row-gap: 8px;
+}
+.app--reading .hdr__logo { height: 42px; padding: 4px 10px; }
+.app--reading .hdr__title { font-size: 1.28rem; }
+.app--reading .hdr__sub { display: none; }
+.app--reading .hdr__time { font-size: 1.15rem; }
+.app--reading .hdr__date { font-size: 0.72rem; }
+.app--reading .rail {
+  height: auto;
+  flex: 0 0 auto;
+  padding-top: 9px;
+  padding-bottom: 9px;
+  row-gap: 7px;
+}
+.app--reading .tab { height: 46px; font-size: 0.92rem; }
+.app--reading .cyc { height: 46px; }
+
+
+/* ============================================================ phone corrections
+   The app is built for a 24" wall panel, but it is set up and tested on a phone, and
+   at 412px the header simply did not fit: the language switch and the search button
+   were pushed 100px past the right edge and the seven category tabs could only be
+   reached by swiping a rail nobody expects to be scrollable.
+
+   Both are fixed by letting the two bars wrap, the same approach the portrait panel
+   block below already takes, rather than by hiding controls. */
+@media (max-width: 699px) {
+  .hdr {
+    height: auto;
+    flex: 0 0 auto;
+    flex-wrap: wrap;
+    row-gap: 10px;
+    gap: 12px;
+    padding: 12px 16px;
+  }
+  .hdr__logo { height: 40px; padding: 4px 9px; }
+  .hdr__titles { flex: 1 1 auto; min-width: 0; }
+  .hdr__title { font-size: 1.12rem; white-space: normal; line-height: 1.25; }
+  /* Actions drop onto their own full-width row instead of being clipped. */
+  .hdr__actions { flex: 1 1 100%; justify-content: space-between; gap: 8px; }
+  .hbtn { height: 44px; padding: 0 14px; }
+  .lang__b { height: 44px; }
+  .sync { height: 44px; }
+
+  /* Every category visible, wrapped, rather than scrolled out of sight. */
+  .rail {
+    height: auto;
+    flex: 0 0 auto;
+    flex-wrap: wrap;
+    row-gap: 8px;
+    gap: 8px;
+    padding: 10px 16px;
+    overflow: visible;
+  }
+  .rail__spacer { display: none; }
+  .tab { height: 44px; padding: 0 12px; font-size: 0.9rem; }
+  .cyc { flex: 1 1 100%; justify-content: center; }
+}
+
+/* ---- toolbars in the reading pane
+   At 1080px the pane is only ~713px wide and the footer's six controls plus their
+   captions ran 2px past the edge, which the layout test flagged. The captions are
+   redundant next to the icons here, so they go and the controls stay reachable. */
+@media (min-width: 760px) {
+  .vw--pane .vw__foot { gap: 8px; padding: 0 12px; }
+  .vw--pane .vw__foot .vbtn { padding: 0 14px; }
+  .vw--pane .vw__foot .vbtn__lbl { display: none; }
+  .vw--pane .vw__pg { min-width: 0; }
 }

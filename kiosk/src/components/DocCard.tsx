@@ -10,6 +10,13 @@ interface Props {
   cached: boolean;
   highlight?: string;
   showCategory?: boolean;
+  /**
+   * Narrower card for the split layout's left column, where the full-width card would wrap
+   * its title to five lines and push the list down to two visible entries.
+   */
+  compact?: boolean;
+  /** Marks the document currently open in the pane beside the list. */
+  selected?: boolean;
   onOpen: (d: Doc) => void;
 }
 
@@ -28,17 +35,31 @@ function Highlighted({ text, needle }: { text: string; needle?: string }) {
   );
 }
 
-export function DocCard({ doc, lang, category, cached, highlight, showCategory, onOpen }: Props) {
+export function DocCard({
+  doc,
+  lang,
+  category,
+  cached,
+  highlight,
+  showCategory,
+  compact,
+  selected,
+  onOpen,
+}: Props) {
   const accent = category?.colour || 'var(--sep-blue)';
   return (
     <button
-      className="card"
+      className={['card', compact ? 'card--compact' : '', selected ? 'card--on' : '']
+        .filter(Boolean)
+        .join(' ')}
       style={{ ['--card-accent' as string]: accent }}
+      // Lets a screen reader, and the styling, express which document is being read.
+      aria-current={selected ? 'true' : undefined}
       onClick={() => onOpen(doc)}
     >
       <div className="card__top">
         <span className="card__ic" aria-hidden="true">
-          <Icon name={category?.icon || 'doc'} size={24} />
+          <Icon name={category?.icon || 'doc'} size={compact ? 20 : 24} />
         </span>
         <span className="card__t">
           <Highlighted text={docTitle(doc, lang)} needle={highlight} />

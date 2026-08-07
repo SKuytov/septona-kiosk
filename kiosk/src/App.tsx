@@ -11,6 +11,8 @@ import type { Doc, Lang, Manifest, SyncState } from './lib/types';
 import { emptyState, getConnection, getLastSync, sync as runSync } from './lib/sync';
 import { listFileIds, loadManifest, metaGet, metaSet, requestPersistence } from './lib/store';
 import { importSeed } from './lib/seed';
+import { useHoldGesture } from './lib/useHoldGesture';
+import { useMediaQuery, SPLIT_QUERY } from './lib/useMediaQuery';
 
 type Screen = 'boot' | 'browse' | 'service';
 
@@ -28,6 +30,18 @@ export default function App() {
   const [cachedIds, setCachedIds] = useState<Set<string>>(new Set());
   const [syncState, setSyncState] = useState<SyncState>(emptyState());
   const [clock, setClock] = useState(new Date());
+
+  /**
+   * Reading layout.
+   *
+   * Wide enough (the wall panel in portrait, or a tablet) and the document opens beside the
+   * list, so moving between documents costs one tap instead of back-then-forward. A phone
+   * stays with the full-screen reader, where a split would leave both halves too narrow.
+   */
+  const split = useMediaQuery(SPLIT_QUERY);
+  /** Pane layout: the list is hidden to give the page the full width. */
+  const [listHidden, setListHidden] = useState(false);
+  const [fullscreen, setFullscreen] = useState(false);
 
   // Auto-cycle bookkeeping
   const [cycling, setCycling] = useState(true);
@@ -231,16 +245,27 @@ export default function App() {
   };
 
   // -------------------------------------------------- hidden service gesture
-  const holdTimer = useRef<number | null>(null);
-  const startHold = () => {
-    holdTimer.current = window.setTimeout(() => setPinOpen(true), 3000);
-  };
-  const endHold = () => {
-    if (holdTimer.current) {
-      clearTimeout(holdTimer.current);
-      holdTimer.current = null;
+  // The timing, the touch handling and the tap fallback live in the hook; see the notes
+  // there for why plain pointer events on the logo image never worked on the device.
+  const openService = useCallback(() => setPinOpen(true), []);
+  const hold = useHoldGesture(openService, 3000);
+
+  // ----------------------------------------------------------- layout guards
+  // Collapsing the list and full screen only exist in the split layout. Leaving either set
+  // while the window narrows to a phone would hide the list with nothing able to bring it
+  // back, so both are dropped as soon as the split does.
+  useEffect(() => {
+    if (!split) {
+      setListHidden(false);
+      setFullscreen(false);
     }
-  };
+  }, [split]);
+
+  // Closing a document also leaves full screen: otherwise the board itself would come back
+  // with the header and category rail still hidden.
+  useEffect(() => {
+    if (!openDoc) setFullscreen(false);
+  }, [openDoc]);
 
   // ------------------------------------------------------------------- render
   if (screen === 'boot') {
@@ -298,19 +323,46 @@ export default function App() {
 
   const totalDocs = manifest ? manifest.documents.filter((d) => matchesLang(d, lang)).length : 0;
 
+  /**
+   * Whether the board and a document are on screen together.
+   *
+   * The split only appears once something is open. With nothing open the panel is an attract
+   * screen cycling through the categories, and that wants the full width for the grid rather
+   * than two thirds of it reserved for an empty reading pane.
+   */
+  const splitOpen = split && !!openDoc;
+
   return (
-    <div className="app">
+    // While a document is open the header and category rail give up some of their height to
+    // the page: see `.app--reading` in app.css. On a tablet in portrait they were taking a
+    // third of the screen before the document even started.
+    <div className={`app ${splitOpen ? 'app--reading' : ''}`}>
       <header className="hdr">
-        <img
-          className="hdr__logo"
-          src={logo}
-          alt="Septona"
-          draggable={false}
-          onPointerDown={startHold}
-          onPointerUp={endHold}
-          onPointerLeave={endHold}
-          onPointerCancel={endHold}
-        />
+        {/*
+          The gesture is bound to this wrapper, not to the image. Android WebView runs its
+          own long-press behaviour over an <img> — the selection callout and image drag — and
+          when it takes the gesture over it cancels ours. The wrapper suppresses all of that
+          in CSS and the image is made transparent to pointer events. The listeners are bound
+          natively by the hook, not through React props, because React's touch listeners are
+          passive and cannot preventDefault.
+
+          The ring is deliberate feedback: an invisible gesture that fails is impossible to
+          tell apart from a broken build, which is exactly how this was first reported.
+        */}
+        <span
+          className="hdr__logo-hit"
+          role="button"
+          tabIndex={-1}
+          aria-label={t(lang, 'service')}
+          ref={hold.ref}
+        >
+          <img className="hdr__logo" src={logo} alt="Septona" draggable={false} />
+          {hold.progress > 0 && (
+            <span className="hdr__hold" aria-hidden="true">
+              <span className="hdr__hold-bar" style={{ width: `${hold.progress * 100}%` }} />
+            </span>
+          )}
+        </span>
 
         <div className="hdr__titles">
           <div className="hdr__title">{settings.kioskTitle}</div>
@@ -409,7 +461,21 @@ export default function App() {
         </nav>
       )}
 
-      <main className="main">
+      <main
+        className={[
+          'main',
+          splitOpen ? 'main--split' : '',
+          splitOpen && listHidden ? 'main--nolist' : '',
+        ]
+          .filter(Boolean)
+          .join(' ')}
+      >
+        {/*
+          The list is always this same markup. In the split layout it becomes the left column
+          and the cards fall to a single compact row each; nothing about it is rebuilt, so
+          scroll position and the selected document survive collapsing and full screen.
+        */}
+        <div className="board">
         {!manifest || categories.length === 0 ? (
           <div className="empty">
             <span className="empty__ic">
@@ -455,12 +521,37 @@ export default function App() {
                     lang={lang}
                     category={current}
                     cached={cachedIds.has(d.versionId)}
+                    compact={splitOpen}
+                    selected={splitOpen && openDoc?.id === d.id}
                     onOpen={(doc) => { setOpenDoc(doc); noteActivity(); }}
                   />
                 ))}
               </div>
             )}
           </div>
+        )}
+        </div>
+
+        {/*
+          Wide layout: the document lives here, beside the list, and takes every pixel the
+          list does not. Full screen is handled inside the viewer by a class that lifts it to
+          a fixed overlay, which behaves far more predictably in a WebView than the
+          Fullscreen API does.
+        */}
+        {splitOpen && (
+          <section className="split__pane">
+            <PdfViewer
+              doc={openDoc}
+              lang={lang}
+              variant="pane"
+              fullscreen={fullscreen}
+              onToggleFullscreen={() => { setFullscreen((f) => !f); noteActivity(); }}
+              listHidden={listHidden}
+              onToggleList={() => { setListHidden((h) => !h); noteActivity(); }}
+              onClose={() => { setOpenDoc(null); noteActivity(); }}
+              onActivity={noteActivity}
+            />
+          </section>
         )}
       </main>
 
@@ -476,10 +567,17 @@ export default function App() {
         />
       )}
 
-      {openDoc && (
+      {/*
+        Narrow layout: the document covers the screen, because a split on a phone would leave
+        both halves too small to use. Full screen still applies — it drops the toolbars.
+      */}
+      {openDoc && !split && (
         <PdfViewer
           doc={openDoc}
           lang={lang}
+          variant="overlay"
+          fullscreen={fullscreen}
+          onToggleFullscreen={() => { setFullscreen((f) => !f); noteActivity(); }}
           onClose={() => { setOpenDoc(null); noteActivity(); }}
           onActivity={noteActivity}
         />

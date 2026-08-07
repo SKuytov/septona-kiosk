@@ -30,6 +30,12 @@ const PATHS: Record<string, string> = {
   check: 'M20 6L9 17l-5-5',
   wifiOff: 'M1 1l22 22M16.7 11.1A6 6 0 0 1 19 13M5 13a6 6 0 0 1 3.4-1.8M8.5 16.4a3 3 0 0 1 3.9-.4M12 20h.01',
   cloud: 'M18 10h-1.3A7 7 0 1 0 4 15.9M8 17l4-4 4 4M12 13v8',
+  /** Enter full screen: four corner brackets pointing outwards. */
+  expand: 'M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M16 21h3a2 2 0 0 0 2-2v-3M8 21H5a2 2 0 0 1-2-2v-3',
+  /** Leave full screen: the same brackets pointing inwards. */
+  collapse: 'M3 8V5a2 2 0 0 1 2-2h3M21 8V5a2 2 0 0 0-2-2h-3M21 16v3a2 2 0 0 1-2 2h-3M3 16v3a2 2 0 0 0 2 2h3',
+  /** Show the document list: a panel with its left column filled. */
+  panelLeft: 'M3 5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2zM10 3v18',
 };
 
 export interface IconProps {

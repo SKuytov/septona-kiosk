@@ -1,9 +1,18 @@
 /**
  * Offline PDF viewer built on pdf.js.
  *
- * The worker is imported through Vite so it is bundled into the APK — nothing is ever
- * fetched from a CDN. Bytes come from IndexedDB, so this works with the network cable
- * unplugged.
+ * The engine and its worker are bundled into the APK — nothing is ever fetched from a CDN —
+ * and the bytes come from IndexedDB, so this works with the network cable unplugged. The
+ * engine is the pdf.js legacy build so it also runs on older Android WebViews; see
+ * `src/lib/pdfEngine.ts`.
+ *
+ * Two layouts, chosen by the caller from available width:
+ *
+ *   - `overlay` — covers the screen. Right for a phone, where a side-by-side split would
+ *     leave neither pane usable.
+ *   - `pane` — sits beside the document list, which stays visible so the operator can move
+ *     between documents without going back. The list can be collapsed, and full screen hides
+ *     everything but the page.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { PDFDocumentProxy } from 'pdfjs-dist';
@@ -11,35 +20,78 @@ import { pdfjs, PDF_OPTIONS } from '../lib/pdfEngine';
 import { Icon } from './Icon';
 import { getFile, putFile } from '../lib/store';
 import { checkPdf, readBundledPdf, errText } from '../lib/pdfBytes';
+import { useZoomPan } from '../lib/useZoomPan';
 import { t, formatDate } from '../lib/i18n';
 import { docTitle } from '../lib/types';
 import type { Doc, Lang } from '../lib/types';
 
 type FitMode = 'width' | 'page' | 'custom';
 
+/**
+ * Why a document would not open. Each needs different advice, and getting this wrong wastes
+ * a site visit: the first build showed "connect the display to the network" for a file that
+ * was already on the device and perfectly intact.
+ */
+type ErrKind =
+  /** Nothing stored and nothing bundled: it really does need a sync. */
+  | 'notCached'
+  /** Bytes present but failed validation — wrong length, no header, no trailer. */
+  | 'damaged'
+  /** Bytes good, engine refused them. A platform problem, not a content problem. */
+  | 'engine';
+
+const MIN_SCALE = 0.25;
+const MAX_SCALE = 6;
+/** Stage padding, kept in step with `.vw__stage` in app.css. */
+const STAGE_PAD = 44;
+
 interface Props {
   doc: Doc;
   lang: Lang;
   onClose: () => void;
   onActivity: () => void;
+  /** `overlay` on a narrow screen, `pane` beside the list on a wide one. */
+  variant?: 'overlay' | 'pane';
+  fullscreen?: boolean;
+  onToggleFullscreen?: () => void;
+  /** Pane layout only: whether the list beside this is currently hidden. */
+  listHidden?: boolean;
+  onToggleList?: () => void;
 }
 
-export function PdfViewer({ doc, lang, onClose, onActivity }: Props) {
+export function PdfViewer({
+  doc,
+  lang,
+  onClose,
+  onActivity,
+  variant = 'overlay',
+  fullscreen = false,
+  onToggleFullscreen,
+  listHidden = false,
+  onToggleList,
+}: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const pdfRef = useRef<PDFDocumentProxy | null>(null);
   const renderTaskRef = useRef<{ cancel: () => void } | null>(null);
+  /** The scale actually on screen, so pinch and the zoom buttons agree with the fit modes. */
+  const renderedScale = useRef(1);
 
   const [pageNum, setPageNum] = useState(1);
   const [pageCount, setPageCount] = useState(doc.pageCount || 0);
   const [scale, setScale] = useState(1);
   const [fit, setFit] = useState<FitMode>('width');
+  /**
+   * The rendered scale, mirrored into state purely so the percentage in the toolbar updates.
+   * `renderedScale` is a ref because the gesture handlers read it without wanting a re-render;
+   * this is written only when the value really changes, so it cannot loop with `render`.
+   */
+  const [shownScale, setShownScale] = useState(1);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   /** Technical cause, shown under the message so a fault can be diagnosed on the panel. */
   const [detail, setDetail] = useState<string | null>(null);
-  /** Which hint to show: a missing download needs the network, a bad copy does not. */
-  const [errKind, setErrKind] = useState<'notCached' | 'openFailed'>('notCached');
+  const [errKind, setErrKind] = useState<ErrKind>('notCached');
 
   // ---- load the document once -------------------------------------------------
   useEffect(() => {
@@ -47,7 +99,6 @@ export function PdfViewer({ doc, lang, onClose, onActivity }: Props) {
     setLoading(true);
     setError(null);
     setDetail(null);
-    setErrKind('notCached');
     setPageNum(1);
 
     (async () => {
@@ -56,8 +107,8 @@ export function PdfViewer({ doc, lang, onClose, onActivity }: Props) {
         let bytes = cached?.bytes ?? null;
         let why: string | null = null;
 
-        // Never hand pdf.js a stream we have not checked. Cached bytes can be short if
-        // they were stored by an older build that did not validate on import.
+        // Never hand pdf.js a stream we have not checked. Cached bytes can be short if they
+        // were stored by an older build that did not validate on import.
         const check = checkPdf(bytes, doc.sizeBytes);
         if (!check.ok) {
           why = check.reason ?? null;
@@ -91,7 +142,7 @@ export function PdfViewer({ doc, lang, onClose, onActivity }: Props) {
         if (!bytes || why) {
           if (!cancelled) {
             setError(t(lang, 'openFailed'));
-            setErrKind('openFailed');
+            setErrKind('damaged');
             setDetail(why);
             setLoading(false);
           }
@@ -109,9 +160,10 @@ export function PdfViewer({ doc, lang, onClose, onActivity }: Props) {
         setPageCount(pdf.numPages);
         setLoading(false);
       } catch (e) {
+        // The bytes were validated above, so anything thrown here came from the engine.
         if (!cancelled) {
           setError(t(lang, 'openFailed'));
-          setErrKind('openFailed');
+          setErrKind('engine');
           setDetail(errText(e));
           setLoading(false);
         }
@@ -139,23 +191,23 @@ export function PdfViewer({ doc, lang, onClose, onActivity }: Props) {
       const page = await pdf.getPage(pageNum);
       const base = page.getViewport({ scale: 1 });
 
-      // Fit modes are computed against the live stage size so rotation and
-      // orientation changes are handled without any hard-coded panel dimensions.
-      const padding = 44;
-      // Layout is not always settled the first time this runs, and a zero-sized stage
-      // would otherwise produce a negative or non-finite scale and a canvas that cannot
-      // be allocated. Fall back to the window, then to a sane default.
-      const availW = Math.max((stage.clientWidth || window.innerWidth || 1080) - padding, 240);
-      const availH = Math.max((stage.clientHeight || window.innerHeight || 1920) - padding, 240);
+      // Fit modes are computed against the live stage size, so rotation, a collapsed list
+      // and full screen are all handled without hard-coded panel dimensions.
+      // Layout is not always settled the first time this runs, and a zero-sized stage would
+      // otherwise produce a non-finite scale and a canvas that cannot be allocated.
+      const availW = Math.max((stage.clientWidth || window.innerWidth || 1080) - STAGE_PAD, 240);
+      const availH = Math.max((stage.clientHeight || window.innerHeight || 1920) - STAGE_PAD, 240);
       let effective = scale;
       if (fit === 'width') effective = availW / base.width;
       else if (fit === 'page') effective = Math.min(availW / base.width, availH / base.height);
       // Guard against a degenerate page box (base.width can be 0 on a malformed PDF).
       if (!Number.isFinite(effective) || effective <= 0) effective = 1;
-      effective = Math.min(effective, 6);
+      effective = Math.min(effective, MAX_SCALE);
+      renderedScale.current = effective;
+      setShownScale((s) => (Math.abs(s - effective) < 0.005 ? s : effective));
 
-      // Cap the backing-store resolution: a 24" panel gains nothing above ~2x and
-      // very large scales can exhaust WebView canvas memory.
+      // Cap the backing-store resolution: a 24" panel gains nothing above ~2x and very large
+      // scales can exhaust WebView canvas memory.
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
       const viewport = page.getViewport({ scale: effective });
 
@@ -177,7 +229,7 @@ export function PdfViewer({ doc, lang, onClose, onActivity }: Props) {
     } catch (e) {
       if ((e as Error)?.name !== 'RenderingCancelledException') {
         setError(t(lang, 'openFailed'));
-        setErrKind('openFailed');
+        setErrKind('engine');
         setDetail(errText(e));
       }
     }
@@ -187,13 +239,30 @@ export function PdfViewer({ doc, lang, onClose, onActivity }: Props) {
     if (!loading && !error) void render();
   }, [loading, error, render]);
 
-  // Re-render on resize so fit modes stay correct if the panel is rotated.
+  // Re-render when the stage changes size: rotation, collapsing the list, full screen.
+  // ResizeObserver catches the layout changes that never fire a window resize.
   useEffect(() => {
-    const onResize = () => {
-      if (!loading && !error) void render();
-    };
+    if (loading || error) return;
+    const stage = stageRef.current;
+    const onResize = () => void render();
     window.addEventListener('resize', onResize);
-    return () => window.removeEventListener('resize', onResize);
+
+    let ro: ResizeObserver | null = null;
+    if (stage && typeof ResizeObserver !== 'undefined') {
+      let last = `${stage.clientWidth}x${stage.clientHeight}`;
+      ro = new ResizeObserver(() => {
+        const now = `${stage.clientWidth}x${stage.clientHeight}`;
+        if (now === last) return; // Ignore the observer's own initial callback.
+        last = now;
+        void render();
+      });
+      ro.observe(stage);
+    }
+
+    return () => {
+      window.removeEventListener('resize', onResize);
+      ro?.disconnect();
+    };
   }, [render, loading, error]);
 
   // Reset scroll to the top of each new page.
@@ -209,40 +278,87 @@ export function PdfViewer({ doc, lang, onClose, onActivity }: Props) {
   const go = (delta: number) =>
     setPageNum((p) => Math.min(Math.max(1, p + delta), Math.max(1, pageCount)));
 
-  const zoom = (factor: number) => {
-    const stage = stageRef.current;
-    const canvas = canvasRef.current;
-    // Switching out of a fit mode: seed the custom scale from what is on screen.
-    if (fit !== 'custom' && stage && canvas) {
-      const current = canvas.clientWidth / (stage.clientWidth - 44);
-      setScale(Math.max(0.25, Math.min(4, current * factor)));
-    } else {
-      setScale((s) => Math.max(0.25, Math.min(4, s * factor)));
-    }
+  /** Applies an absolute scale, leaving whichever fit mode was active. */
+  const applyScale = useCallback((next: number) => {
+    setScale(Math.max(MIN_SCALE, Math.min(MAX_SCALE, next)));
     setFit('custom');
-  };
+  }, []);
+
+  const zoom = (factor: number) => applyScale(renderedScale.current * factor);
+
+  const currentScale = useCallback(() => renderedScale.current, []);
+
+  /** Double-tap alternates between the whole page and a comfortable reading magnification. */
+  const onDoubleTap = useCallback(() => {
+    if (fit === 'custom' && renderedScale.current > 1.05) setFit('page');
+    else applyScale(2);
+  }, [fit, applyScale]);
+
+  useZoomPan({
+    stageRef,
+    currentScale,
+    onScale: applyScale,
+    onDoubleTap,
+    onActivity,
+    enabled: !loading && !error,
+  });
 
   // Keyboard support — handy for a wireless keyboard during setup.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-      else if (e.key === 'ArrowRight' || e.key === 'PageDown') go(1);
+      if (e.key === 'Escape') {
+        if (fullscreen && onToggleFullscreen) onToggleFullscreen();
+        else onClose();
+      } else if (e.key === 'ArrowRight' || e.key === 'PageDown') go(1);
       else if (e.key === 'ArrowLeft' || e.key === 'PageUp') go(-1);
+      else if (e.key === 'f' || e.key === 'F') onToggleFullscreen?.();
       else return;
       onActivity();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pageCount, onClose, onActivity]);
+  }, [pageCount, onClose, onActivity, fullscreen, onToggleFullscreen]);
+
+  const hint =
+    errKind === 'notCached'
+      ? t(lang, 'notCachedHint')
+      : errKind === 'damaged'
+        ? t(lang, 'openFailedHint')
+        : t(lang, 'engineFailedHint');
+
+  const cls = [
+    'vw',
+    variant === 'pane' ? 'vw--pane' : 'vw--overlay',
+    fullscreen ? 'vw--full' : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
 
   return (
-    <div className="vw" onPointerDown={onActivity}>
+    <div className={cls} onPointerDown={onActivity}>
       <div className="vw__bar">
-        <button className="vbtn" onClick={act(onClose)} aria-label={t(lang, 'back')}>
-          <Icon name="arrowLeft" size={22} />
-          <span>{t(lang, 'back')}</span>
-        </button>
+        {/*
+          In the pane layout the list is right there, so a Back button would be noise; the
+          useful control is one that hides the list to give the page the whole width. In the
+          overlay layout Back is the only way out.
+        */}
+        {variant === 'pane' && onToggleList ? (
+          <button
+            className={`vbtn ${listHidden ? '' : 'vbtn--on'}`}
+            onClick={act(onToggleList)}
+            aria-label={t(lang, listHidden ? 'showList' : 'hideList')}
+            title={t(lang, listHidden ? 'showList' : 'hideList')}
+          >
+            <Icon name="panelLeft" size={22} />
+          </button>
+        ) : (
+          <button className="vbtn" onClick={act(onClose)} aria-label={t(lang, 'back')}>
+            <Icon name="arrowLeft" size={22} />
+            <span>{t(lang, 'back')}</span>
+          </button>
+        )}
+
         <div className="vw__ttl">
           <div className="vw__t">{docTitle(doc, lang)}</div>
           <div className="vw__s">
@@ -251,6 +367,18 @@ export function PdfViewer({ doc, lang, onClose, onActivity }: Props) {
             {pageCount ? ` · ${pageCount} ${t(lang, 'pages')}` : ''}
           </div>
         </div>
+
+        {onToggleFullscreen && (
+          <button
+            className="vbtn"
+            onClick={act(onToggleFullscreen)}
+            aria-label={t(lang, fullscreen ? 'exitFullscreen' : 'fullscreen')}
+            title={t(lang, fullscreen ? 'exitFullscreen' : 'fullscreen')}
+          >
+            <Icon name={fullscreen ? 'collapse' : 'expand'} size={22} />
+          </button>
+        )}
+
         <button className="vbtn" onClick={act(onClose)} aria-label={t(lang, 'close')}>
           <Icon name="x" size={24} />
         </button>
@@ -264,29 +392,11 @@ export function PdfViewer({ doc, lang, onClose, onActivity }: Props) {
       ) : error ? (
         <div className="vw__load">
           <div className="empty__ic" style={{ background: 'rgba(255,255,255,.14)', color: '#fff' }}>
-            <Icon name={errKind === 'openFailed' ? 'doc' : 'wifiOff'} size={44} />
+            <Icon name={errKind === 'notCached' ? 'wifiOff' : 'doc'} size={44} />
           </div>
-          <div style={{ fontSize: '1.2rem', fontWeight: 700, textAlign: 'center', maxWidth: 620 }}>
-            {error}
-          </div>
-          <div style={{ opacity: 0.75, textAlign: 'center', maxWidth: 540, lineHeight: 1.5 }}>
-            {t(lang, errKind === 'openFailed' ? 'openFailedHint' : 'notCachedHint')}
-          </div>
-          {detail && (
-            <div
-              style={{
-                marginTop: 6,
-                opacity: 0.6,
-                fontSize: '.8rem',
-                fontFamily: 'ui-monospace, monospace',
-                textAlign: 'center',
-                maxWidth: 620,
-                wordBreak: 'break-word',
-              }}
-            >
-              {detail}
-            </div>
-          )}
+          <div className="vw__errt">{error}</div>
+          <div className="vw__errh">{hint}</div>
+          {detail && <div className="vw__errd">{detail}</div>}
         </div>
       ) : (
         <div className="vw__stage" ref={stageRef}>
@@ -298,13 +408,24 @@ export function PdfViewer({ doc, lang, onClose, onActivity }: Props) {
         <div className="vw__foot">
           <button className="vbtn" onClick={act(() => go(-1))} disabled={pageNum <= 1}>
             <Icon name="chevronLeft" size={22} />
-            <span>{t(lang, 'prevPage')}</span>
+            <span className="vbtn__lbl">{t(lang, 'prevPage')}</span>
           </button>
+          {/*
+            Two forms of the same indicator. On a phone the full "Стр. 1 от 6" plus five
+            controls does not fit 412px, and the toolbar overlapped itself — the next-page
+            arrow was drawn on top of the text. CSS cannot shorten a string, so the short
+            form is rendered too and the stylesheet picks one.
+          */}
           <div className="vw__pg">
-            {t(lang, 'page')} {pageNum} {t(lang, 'of')} {pageCount || '—'}
+            <span className="vw__pg-long">
+              {t(lang, 'page')} {pageNum} {t(lang, 'of')} {pageCount || '—'}
+            </span>
+            <span className="vw__pg-short">
+              {pageNum}/{pageCount || '—'}
+            </span>
           </div>
           <button className="vbtn" onClick={act(() => go(1))} disabled={pageNum >= pageCount}>
-            <span>{t(lang, 'nextPage')}</span>
+            <span className="vbtn__lbl">{t(lang, 'nextPage')}</span>
             <Icon name="chevronRight" size={22} />
           </button>
 
@@ -313,6 +434,7 @@ export function PdfViewer({ doc, lang, onClose, onActivity }: Props) {
           <button className="vbtn" onClick={act(() => zoom(1 / 1.25))} aria-label={t(lang, 'zoomOut')}>
             <Icon name="minus" size={22} />
           </button>
+          <div className="vw__pct">{Math.round(shownScale * 100)}%</div>
           <button className="vbtn" onClick={act(() => zoom(1.25))} aria-label={t(lang, 'zoomIn')}>
             <Icon name="plus" size={22} />
           </button>
@@ -321,7 +443,9 @@ export function PdfViewer({ doc, lang, onClose, onActivity }: Props) {
             onClick={act(() => setFit(fit === 'width' ? 'page' : 'width'))}
           >
             <Icon name="grid" size={20} />
-            <span>{fit === 'width' ? t(lang, 'fitPage') : t(lang, 'fitWidth')}</span>
+            <span className="vbtn__lbl">
+              {fit === 'width' ? t(lang, 'fitPage') : t(lang, 'fitWidth')}
+            </span>
           </button>
         </div>
       )}

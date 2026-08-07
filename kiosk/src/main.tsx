@@ -1,3 +1,6 @@
+// The WebView compatibility shim is loaded by index.html as a blocking classic script, so
+// that it runs before this bundle exists at all — it is not imported here on purpose.
+// See public/compat.js and src/lib/compat.ts.
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App';

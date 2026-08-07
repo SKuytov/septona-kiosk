@@ -11,7 +11,11 @@ export default defineConfig({
     chunkSizeWarningLimit: 2000,
     rollupOptions: {
       output: {
-        manualChunks: { pdfjs: ['pdfjs-dist'], react: ['react', 'react-dom'] },
+        manualChunks: {
+          // The legacy engine build, for older Android WebViews — see src/lib/pdfEngine.ts.
+          pdfjs: ['pdfjs-dist/legacy/build/pdf.mjs'],
+          react: ['react', 'react-dom'],
+        },
       },
     },
   },
