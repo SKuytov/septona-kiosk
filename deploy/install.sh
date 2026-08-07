@@ -12,6 +12,16 @@
 
 set -euo pipefail
 
+# Never fail silently. Without this, any non-zero command under `set -e` ends the
+# run with no output at all, which is impossible to diagnose over SSH.
+on_error() {
+  local rc=$1 line=$2 cmd=$3
+  printf '\n\033[31m !! Installation stopped at line %s (exit %s)\033[0m\n' "$line" "$rc" >&2
+  printf '\033[31m    while running: %s\033[0m\n\n' "$cmd" >&2
+  exit "$rc"
+}
+trap 'on_error "$?" "$LINENO" "$BASH_COMMAND"' ERR
+
 REPO_URL="${REPO_URL:-https://github.com/SKuytov/septona-kiosk.git}"
 INSTALL_DIR="${INSTALL_DIR:-/opt/septona-kiosk}"
 HTTP_PORT="${HTTP_PORT:-8080}"
@@ -42,8 +52,13 @@ esac
 
 # A port already in use is the single most common cause of a failed first start,
 # and the error Docker gives for it is not obvious. Check before changing anything.
-if command -v ss >/dev/null 2>&1 && ss -ltn "sport = :${HTTP_PORT}" 2>/dev/null | grep -q LISTEN; then
-  die "Port ${HTTP_PORT} is already in use. Re-run with:  HTTP_PORT=9090 sudo -E bash install.sh"
+# Capture first, match second: `ss | grep -q` closes the pipe early, which makes
+# ss die of SIGPIPE and — under pipefail — silently inverts the test.
+if command -v ss >/dev/null 2>&1; then
+  LISTENING="$(ss -ltn 2>/dev/null || true)"
+  if grep -qE "[:.]${HTTP_PORT}[[:space:]]" <<<"$LISTENING"; then
+    die "Port ${HTTP_PORT} is already in use. Re-run with:  HTTP_PORT=9090 sudo -E bash install.sh"
+  fi
 fi
 
 printf '\n%s  Septona Kiosk — installation%s\n' "$B" "$N"
@@ -104,7 +119,11 @@ else
   JWT_SECRET="$(openssl rand -hex 32)"
   PG_PASSWORD="$(openssl rand -hex 16)"
   # Avoid look-alike characters: this gets typed by a human on first login.
-  ADMIN_PASSWORD="$(tr -dc 'A-HJ-NP-Za-km-z2-9' </dev/urandom | head -c 16)"
+  # Read a bounded chunk and then filter. Draining /dev/urandom into `head -c`
+  # kills tr with SIGPIPE, which under pipefail aborts the whole installer.
+  RANDOM_POOL="$(head -c 1024 /dev/urandom | LC_ALL=C tr -dc 'A-HJ-NP-Za-km-z2-9')"
+  [ "${#RANDOM_POOL}" -ge 16 ] || die "Could not read randomness from /dev/urandom."
+  ADMIN_PASSWORD="${RANDOM_POOL:0:16}"
 
   umask 077
   cat > .env <<EOF
@@ -137,7 +156,7 @@ for i in $(seq 1 90); do
     READY=true; break
   fi
   sleep 2
-  [ $((i % 15)) -eq 0 ] && info "still waiting… (${i}0s)"
+  if [ $((i % 15)) -eq 0 ]; then info "still waiting… ($((i * 2))s)"; fi
 done
 
 if [ "$READY" != true ]; then
@@ -175,9 +194,10 @@ if [ "$FRESH_INSTALL" = true ]; then
       2. Създайте устройство (Устройства > Ново устройство) to get a device key.
       3. On the panel, open the app, hold the logo for 3 seconds, enter PIN 2470,
          then type the server address and the device key.
-      4. To load the initial document set:
-           cd ${INSTALL_DIR}
-           docker compose exec server node scripts/import-archive.js /data/KIOSK_DOCS.zip
+      4. To load the initial document set, copy the archive to this server
+         (from your PC:  scp KIOSK_DOCS.zip ${SUDO_USER:-user}@${IP}:~/ ) and run:
+           sudo bash ${INSTALL_DIR}/deploy/import-docs.sh ~/KIOSK_DOCS.zip
+         Or skip it and upload documents from the management platform.
 
 EOF
 else

@@ -334,6 +334,13 @@ cd server
 DATABASE_URL=... DATA_DIR=... node scripts/import-archive.js /path/to/KIOSK_DOCS
 ```
 
+On a Docker installation use the wrapper instead — it unpacks a `.zip`, copies the tree
+into the container and runs the importer there:
+
+```bash
+sudo bash /opt/septona-kiosk/deploy/import-docs.sh ~/KIOSK_DOCS.zip   # or a folder
+```
+
 Note the asymmetry: the importer accepts Office files, but the **HTTP upload path is
 PDF-only** and rejects anything else with `415 UNSUPPORTED_FILE_TYPE`. That is
 deliberate — silent server-side conversion of a policy document can reflow pagination,
