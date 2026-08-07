@@ -22,7 +22,7 @@ on the network is an equivalent viewer.
 | `kiosk/` | The panel app (React + Vite + pdf.js), wrapped with Capacitor into an Android APK. |
 | `deploy/` | Container image for the server, plus `install.sh` — the one-command Ubuntu installer. |
 | `docs/` | `DEPLOYMENT.md` — Proxmox/Ubuntu install guide (BG). `API.md` — the API and brand contract. `OPERATIONS.md` — day-to-day runbook. |
-| `dist/` | Prebuilt, signed `septona-kiosk-1.0.1.apk`, with the current document set already embedded. |
+| `dist/` | Prebuilt, signed `septona-kiosk-1.0.2.apk`, with the current document set already embedded. |
 
 ---
 
@@ -59,7 +59,7 @@ In the admin platform, go to **Устройства → Ново устройс�
 
 ### 3. Install the app
 
-Copy `dist/septona-kiosk-1.0.1.apk` to the panel and install it (allow installation from
+Copy `dist/septona-kiosk-1.0.2.apk` to the panel and install it (allow installation from
 unknown sources). Open it, then:
 
 1. Press and hold the Septona logo in the top-left for **3 seconds**.
@@ -187,6 +187,35 @@ npx cap copy android && cd android && ./gradlew assembleRelease
 Each file is checked for PDF magic bytes and against the size in the manifest before it
 is embedded, and the bundled manifest lists only what was actually written — a panel
 never shows a card it cannot open.
+
+### Byte validation on the device
+
+Build-time checks are not enough on their own. Inside the APK the documents are served by
+Capacitor's asset server, whose responses carry no `Content-Length`, so a short or
+interrupted read looks like a perfectly ordinary success: the response is "ok" and
+`arrayBuffer()` simply resolves with fewer bytes than the file has. Version 1.0.1 stored
+whatever came back, which is why the board could show cards whose documents then failed
+to open.
+
+Every PDF is therefore validated again on the device before it is stored or opened —
+header, `%%EOF` trailer and exact length against the manifest (`kiosk/src/lib/pdfBytes.ts`).
+If a read is short it is retried through `XMLHttpRequest`, which takes a different path
+through the asset layer. Consequences:
+
+- A bad byte stream is never stored silently; the document is skipped and the reason kept.
+- Opening a document whose stored copy is damaged repairs it from the bundled copy.
+- Panels that already hold an unvalidated copy re-import once on upgrade (`seedGeneration`
+  in `kiosk/src/lib/seed.ts`), so no cache wipe is needed on site. A panel that has synced
+  with a server is never touched.
+
+### Diagnostics
+
+The maintenance screen (hold the logo 3 s, service code) has a **Диагностика** panel that
+checks the whole path a document travels — WebView version, module-worker support, the
+manifest, every stored file, a read straight from the APK, and an end-to-end test open —
+and reports the first thing that is actually broken. Use it before escalating any "document
+cannot be opened" report. When a document does fail, the viewer now shows the technical
+reason under the message instead of a generic network hint.
 
 To build a panel that must be configured on site instead:
 

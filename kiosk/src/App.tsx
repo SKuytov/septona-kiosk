@@ -46,15 +46,17 @@ export default function App() {
         getLastSync(),
       ]);
 
-      // First launch of a seeded build: copy the documents embedded in the APK into
-      // IndexedDB so the board is usable before anyone configures a server. Returns
-      // null when there is no bundle or content already exists.
+      // Copy the documents embedded in the APK into IndexedDB so the board is usable
+      // before anyone configures a server.
+      //
+      // Always ask: importSeed decides for itself whether there is anything to do. It
+      // refuses once the panel has synced with a server, and it re-imports when the
+      // local copy came from an older, unvalidated import. Progress only arrives once
+      // real work starts, so a normal boot shows no import step at all.
       let m = stored;
-      if (!m) {
-        setSeeding({ done: 0, total: 0 });
-        m = (await importSeed((p) => setSeeding(p))) ?? undefined;
-        setSeeding(null);
-      }
+      const seeded = await importSeed((p) => setSeeding(p));
+      if (seeded) m = seeded;
+      setSeeding(null);
 
       const ids = await listFileIds();
       if (m) {

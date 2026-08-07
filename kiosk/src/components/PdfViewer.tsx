@@ -6,16 +6,14 @@
  * unplugged.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import * as pdfjs from 'pdfjs-dist';
-import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import type { PDFDocumentProxy } from 'pdfjs-dist';
+import { pdfjs, PDF_OPTIONS } from '../lib/pdfEngine';
 import { Icon } from './Icon';
-import { getFile } from '../lib/store';
+import { getFile, putFile } from '../lib/store';
+import { checkPdf, readBundledPdf, errText } from '../lib/pdfBytes';
 import { t, formatDate } from '../lib/i18n';
 import { docTitle } from '../lib/types';
 import type { Doc, Lang } from '../lib/types';
-
-pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
 
 type FitMode = 'width' | 'page' | 'custom';
 
@@ -38,27 +36,71 @@ export function PdfViewer({ doc, lang, onClose, onActivity }: Props) {
   const [fit, setFit] = useState<FitMode>('width');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  /** Technical cause, shown under the message so a fault can be diagnosed on the panel. */
+  const [detail, setDetail] = useState<string | null>(null);
+  /** Which hint to show: a missing download needs the network, a bad copy does not. */
+  const [errKind, setErrKind] = useState<'notCached' | 'openFailed'>('notCached');
 
   // ---- load the document once -------------------------------------------------
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError(null);
+    setDetail(null);
+    setErrKind('notCached');
     setPageNum(1);
 
     (async () => {
       try {
         const cached = await getFile(doc.versionId);
-        if (!cached) {
+        let bytes = cached?.bytes ?? null;
+        let why: string | null = null;
+
+        // Never hand pdf.js a stream we have not checked. Cached bytes can be short if
+        // they were stored by an older build that did not validate on import.
+        const check = checkPdf(bytes, doc.sizeBytes);
+        if (!check.ok) {
+          why = check.reason ?? null;
+          // Self-repair: re-read the copy bundled in the app and replace the bad entry.
+          const reread = await readBundledPdf(doc.versionId, doc.sizeBytes);
+          if ('bytes' in reread) {
+            bytes = reread.bytes;
+            await putFile({
+              versionId: doc.versionId,
+              documentId: doc.id,
+              bytes: reread.bytes,
+              sizeBytes: reread.bytes.byteLength,
+              sha256: doc.sha256,
+              cachedAt: new Date().toISOString(),
+            }).catch(() => {}); // A read-only store must not block viewing.
+            why = null;
+          } else if (!cached) {
+            if (!cancelled) {
+              setError(t(lang, 'notCached'));
+              setErrKind('notCached');
+              setDetail(reread.error);
+              setLoading(false);
+            }
+            return;
+          } else {
+            // Distinguish the two copies: the stored one and the bundled one.
+            why = why === reread.error ? why : `съхранено: ${why} · APK: ${reread.error}`;
+          }
+        }
+
+        if (!bytes || why) {
           if (!cancelled) {
-            setError(t(lang, 'notCached'));
+            setError(t(lang, 'openFailed'));
+            setErrKind('openFailed');
+            setDetail(why);
             setLoading(false);
           }
           return;
         }
+
         // pdf.js takes ownership of the buffer, so hand it a copy.
-        const data = new Uint8Array(cached.bytes.slice(0));
-        const pdf = await pdfjs.getDocument({ data, isEvalSupported: false }).promise;
+        const data = new Uint8Array(bytes.slice(0));
+        const pdf = await pdfjs.getDocument({ data, ...PDF_OPTIONS }).promise;
         if (cancelled) {
           pdf.destroy();
           return;
@@ -66,9 +108,11 @@ export function PdfViewer({ doc, lang, onClose, onActivity }: Props) {
         pdfRef.current = pdf;
         setPageCount(pdf.numPages);
         setLoading(false);
-      } catch {
+      } catch (e) {
         if (!cancelled) {
           setError(t(lang, 'openFailed'));
+          setErrKind('openFailed');
+          setDetail(errText(e));
           setLoading(false);
         }
       }
@@ -98,11 +142,17 @@ export function PdfViewer({ doc, lang, onClose, onActivity }: Props) {
       // Fit modes are computed against the live stage size so rotation and
       // orientation changes are handled without any hard-coded panel dimensions.
       const padding = 44;
-      const availW = stage.clientWidth - padding;
-      const availH = stage.clientHeight - padding;
+      // Layout is not always settled the first time this runs, and a zero-sized stage
+      // would otherwise produce a negative or non-finite scale and a canvas that cannot
+      // be allocated. Fall back to the window, then to a sane default.
+      const availW = Math.max((stage.clientWidth || window.innerWidth || 1080) - padding, 240);
+      const availH = Math.max((stage.clientHeight || window.innerHeight || 1920) - padding, 240);
       let effective = scale;
       if (fit === 'width') effective = availW / base.width;
       else if (fit === 'page') effective = Math.min(availW / base.width, availH / base.height);
+      // Guard against a degenerate page box (base.width can be 0 on a malformed PDF).
+      if (!Number.isFinite(effective) || effective <= 0) effective = 1;
+      effective = Math.min(effective, 6);
 
       // Cap the backing-store resolution: a 24" panel gains nothing above ~2x and
       // very large scales can exhaust WebView canvas memory.
@@ -127,6 +177,8 @@ export function PdfViewer({ doc, lang, onClose, onActivity }: Props) {
     } catch (e) {
       if ((e as Error)?.name !== 'RenderingCancelledException') {
         setError(t(lang, 'openFailed'));
+        setErrKind('openFailed');
+        setDetail(errText(e));
       }
     }
   }, [pageNum, scale, fit, lang]);
@@ -212,14 +264,29 @@ export function PdfViewer({ doc, lang, onClose, onActivity }: Props) {
       ) : error ? (
         <div className="vw__load">
           <div className="empty__ic" style={{ background: 'rgba(255,255,255,.14)', color: '#fff' }}>
-            <Icon name="wifiOff" size={44} />
+            <Icon name={errKind === 'openFailed' ? 'doc' : 'wifiOff'} size={44} />
           </div>
           <div style={{ fontSize: '1.2rem', fontWeight: 700, textAlign: 'center', maxWidth: 620 }}>
             {error}
           </div>
           <div style={{ opacity: 0.75, textAlign: 'center', maxWidth: 540, lineHeight: 1.5 }}>
-            {t(lang, 'notCachedHint')}
+            {t(lang, errKind === 'openFailed' ? 'openFailedHint' : 'notCachedHint')}
           </div>
+          {detail && (
+            <div
+              style={{
+                marginTop: 6,
+                opacity: 0.6,
+                fontSize: '.8rem',
+                fontFamily: 'ui-monospace, monospace',
+                textAlign: 'center',
+                maxWidth: 620,
+                wordBreak: 'break-word',
+              }}
+            >
+              {detail}
+            </div>
+          )}
         </div>
       ) : (
         <div className="vw__stage" ref={stageRef}>

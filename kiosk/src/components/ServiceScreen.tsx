@@ -5,6 +5,7 @@
  */
 import { useEffect, useState } from 'react';
 import { Icon } from './Icon';
+import { Diagnostics } from './Diagnostics';
 import { t, formatBytes, formatDate } from '../lib/i18n';
 import { APP_VERSION, getConnection, setConnection, testConnection } from '../lib/sync';
 import { cacheStats, clearFiles, requestPersistence } from '../lib/store';
@@ -237,6 +238,8 @@ export function ServiceScreen({ lang, sync, onSyncNow, onClose }: Props) {
               <div className="note note--info" style={{ marginTop: 16 }}>{sync.message}</div>
             )}
           </div>
+
+          <Diagnostics />
 
           <div className="panel">
             <h2 className="panel__t">Указания за монтаж</h2>
