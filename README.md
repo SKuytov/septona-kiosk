@@ -22,7 +22,7 @@ on the network is an equivalent viewer.
 | `kiosk/` | The panel app (React + Vite + pdf.js), wrapped with Capacitor into an Android APK. |
 | `deploy/` | Container image for the server, plus `install.sh` — the one-command Ubuntu installer. |
 | `docs/` | `DEPLOYMENT.md` — Proxmox/Ubuntu install guide (BG). `API.md` — the API and brand contract. `OPERATIONS.md` — day-to-day runbook. |
-| `dist/` | Prebuilt, signed `septona-kiosk-1.0.0.apk`. |
+| `dist/` | Prebuilt, signed `septona-kiosk-1.0.1.apk`, with the current document set already embedded. |
 
 ---
 
@@ -59,7 +59,7 @@ In the admin platform, go to **Устройства → Ново устройс�
 
 ### 3. Install the app
 
-Copy `dist/septona-kiosk-1.0.0.apk` to the panel and install it (allow installation from
+Copy `dist/septona-kiosk-1.0.1.apk` to the panel and install it (allow installation from
 unknown sources). Open it, then:
 
 1. Press and hold the Septona logo in the top-left for **3 seconds**.
@@ -67,8 +67,9 @@ unknown sources). Open it, then:
 3. Enter the server address (e.g. `http://192.168.1.50:8080`) and the device key.
 4. Press **Проверка на връзката**, then **Запази**.
 
-The first sync downloads every published document. After that the panel is fully
-offline-capable.
+The shipped APK already contains the published document set, so the board is complete
+the moment it opens — before step 1 has even been done. Registering it against a server
+adds updates on top; see [Preloaded documents](#preloaded-documents).
 
 ### 4. Or open it in a browser
 
@@ -166,6 +167,48 @@ bar.
 
 ---
 
+## Preloaded documents
+
+The APK can ship with the published set embedded, so a panel shows the full board on
+first power-up with no server, no network and no configuration. On first launch the
+bundle is copied into IndexedDB; after that it is ordinary cached content.
+
+Generate the bundle against a running server, then build:
+
+```bash
+cd kiosk
+SEED_SERVER=http://192.168.1.50:8080 \
+SEED_DEVICE_KEY=sk_xxxxxxxx_xxxxxxxxxxxx \
+  node scripts/make-seed.mjs      # -> kiosk/public/seed/  (~13 MB for 55 documents)
+npm run build
+npx cap copy android && cd android && ./gradlew assembleRelease
+```
+
+Each file is checked for PDF magic bytes and against the size in the manifest before it
+is embedded, and the bundled manifest lists only what was actually written — a panel
+never shows a card it cannot open.
+
+To build a panel that must be configured on site instead:
+
+```bash
+node scripts/make-seed.mjs --clean
+```
+
+`kiosk/public/seed/` is generated output and is not tracked in git.
+
+### How it is replaced by the server
+
+Nothing special happens on handover. Sync saves the server's manifest and deletes every
+cached file the server's manifest does not reference, which is the same reconciliation
+that retires superseded revisions. So pointing a seeded panel at a server converges on
+exactly the server's set — with no duplication — even when that server assigned
+different version ids to the same documents.
+
+A deliberate cache wipe from the service screen is not undone: the import runs once and
+records that it did.
+
+---
+
 ## Building from source
 
 Requirements: Node 20, JDK 17, Android SDK (platform 34, build-tools 34.0.0).
@@ -183,16 +226,22 @@ cd android && ./gradlew assembleRelease
 ### Screen orientation
 
 The APK is built **portrait** — the orientation the TW2424AS is wall-mounted in. It is a
-single string resource, so switching a build to landscape needs no code change:
+Gradle property, so a landscape build needs no source change:
 
-```xml
-<!-- kiosk/android/app/src/main/res/values/strings.xml -->
-<string name="kiosk_orientation">portrait</string>   <!-- or: landscape -->
+```bash
+./gradlew assembleRelease -PkioskOrientation=landscape
 ```
 
-Rebuild after changing it. The layout itself is responsive and handles both — the
-category bar wraps to two rows and the document grid drops to two columns in portrait —
-so this only pins which one the panel is locked to.
+The default lives in `kiosk/android/app/build.gradle` as a manifest placeholder. The
+layout itself is responsive and handles both — the category bar wraps to two rows and
+the document grid drops to two columns in portrait — so this only pins which one the
+panel is locked to.
+
+> **Do not** point `android:screenOrientation` at a string resource. It is an *enum*
+> attribute, so the platform reads it as an integer; a resource reference makes the
+> package parser reject the whole APK at install time with the unhelpful message
+> *"There was a problem parsing the package"*. `aapt2 dump xmltree` should show
+> `screenOrientation(0x0101001e)=1`, a literal int — not `@0x7f...`.
 
 ### Shipping a pre-configured APK
 

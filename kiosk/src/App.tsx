@@ -10,6 +10,7 @@ import { catName, matchesLang, DEFAULT_SETTINGS } from './lib/types';
 import type { Doc, Lang, Manifest, SyncState } from './lib/types';
 import { emptyState, getConnection, getLastSync, sync as runSync } from './lib/sync';
 import { listFileIds, loadManifest, metaGet, metaSet, requestPersistence } from './lib/store';
+import { importSeed } from './lib/seed';
 
 type Screen = 'boot' | 'browse' | 'service';
 
@@ -22,6 +23,8 @@ export default function App() {
   const [searching, setSearching] = useState(false);
   const [pinOpen, setPinOpen] = useState(false);
   const [configured, setConfigured] = useState<boolean | null>(null);
+  // Non-null while the bundled document set is being imported on first launch.
+  const [seeding, setSeeding] = useState<{ done: number; total: number } | null>(null);
   const [cachedIds, setCachedIds] = useState<Set<string>>(new Set());
   const [syncState, setSyncState] = useState<SyncState>(emptyState());
   const [clock, setClock] = useState(new Date());
@@ -36,13 +39,24 @@ export default function App() {
   // ------------------------------------------------------------ initial load
   useEffect(() => {
     void (async () => {
-      const [m, conn, savedLang, last, ids] = await Promise.all([
+      const [stored, conn, savedLang, last] = await Promise.all([
         loadManifest(),
         getConnection(),
         metaGet<Lang>('lang'),
         getLastSync(),
-        listFileIds(),
       ]);
+
+      // First launch of a seeded build: copy the documents embedded in the APK into
+      // IndexedDB so the board is usable before anyone configures a server. Returns
+      // null when there is no bundle or content already exists.
+      let m = stored;
+      if (!m) {
+        setSeeding({ done: 0, total: 0 });
+        m = (await importSeed((p) => setSeeding(p))) ?? undefined;
+        setSeeding(null);
+      }
+
+      const ids = await listFileIds();
       if (m) {
         setManifest(m);
         setLang(savedLang || m.settings.defaultLanguage || 'bg');
@@ -59,7 +73,8 @@ export default function App() {
       setCachedIds(new Set(ids));
       setConfigured(!!(conn?.baseUrl && conn?.deviceKey));
       void requestPersistence();
-      // Brief splash so the panel never flashes an empty frame on power-up.
+      // Brief splash so the panel never flashes an empty frame on power-up. Seeding
+      // has already finished by this point, so no extra delay is needed for it.
       setTimeout(() => setScreen('browse'), m ? 500 : 900);
     })();
   }, []);
@@ -231,7 +246,11 @@ export default function App() {
       <div className="boot">
         <img className="boot__logo" src={logo} alt="Septona" />
         <div className="boot__bar"><i /></div>
-        <div className="boot__txt">{t(lang, 'loading')}</div>
+        <div className="boot__txt">
+          {seeding
+            ? `${t(lang, 'preparing')} ${seeding.done}/${seeding.total}`
+            : t(lang, 'loading')}
+        </div>
       </div>
     );
   }
@@ -270,7 +289,9 @@ export default function App() {
         : syncState.status === 'offline'
           ? t(lang, 'offline')
           : configured === false
-            ? t(lang, 'notConfigured')
+            // A seeded panel is showing the set bundled in the APK: it is not
+            // misconfigured, it just has no server yet.
+            ? t(lang, manifest ? 'localContent' : 'notConfigured')
             : t(lang, 'synced');
 
   const totalDocs = manifest ? manifest.documents.filter((d) => matchesLang(d, lang)).length : 0;

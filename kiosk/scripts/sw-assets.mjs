@@ -16,6 +16,10 @@ const walk = (dir) => {
     else {
       const rel = relative(dist, full).split('\\').join('/');
       if (rel === 'sw.js' || rel === 'sw-assets.json') continue;
+      // The seed bundle is imported into IndexedDB on first launch, so precaching it
+      // would store the same ~13 MB of PDFs a second time and slow the first load for
+      // no benefit.
+      if (rel.startsWith('seed/')) continue;
       out.push('./' + rel);
     }
   }
