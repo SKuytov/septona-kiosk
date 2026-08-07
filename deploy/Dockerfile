@@ -9,6 +9,15 @@ RUN cd admin && npm ci --no-audit --no-fund
 COPY admin/ admin/
 RUN cd admin && npm run build
 
+# Kiosk front-end. The same bundle that ships inside the APK is also served at /kiosk
+# so any browser on the network is an equivalent viewer. It is built with no baked-in
+# server or device key: the browser build defaults to its own origin, and the key is
+# supplied once per screen.
+COPY kiosk/package.json kiosk/package-lock.json* kiosk/
+RUN cd kiosk && npm ci --no-audit --no-fund
+COPY kiosk/ kiosk/
+RUN cd kiosk && npm run build
+
 # ---------- stage 2: runtime ----------
 FROM node:20-bookworm-slim
 
@@ -24,6 +33,7 @@ ENV NODE_ENV=production \
     DATA_DIR=/data \
     PORT=8080 \
     ADMIN_DIST=/app/admin/dist \
+    KIOSK_DIST=/app/kiosk/dist \
     HOME=/tmp
 
 WORKDIR /app
@@ -33,6 +43,7 @@ RUN npm ci --omit=dev --no-audit --no-fund
 
 COPY server/ ./
 COPY --from=web /build/admin/dist ./admin/dist
+COPY --from=web /build/kiosk/dist ./kiosk/dist
 
 RUN mkdir -p /data && chown -R node:node /data /app
 USER node

@@ -1,0 +1,25 @@
+# Keep the build context small and reproducible. Without this, the 60+ MB Android
+# project, the Gradle caches and the imported PDF library are all uploaded to the
+# Docker daemon on every build.
+
+.git
+.gitignore
+
+# Documents live on a volume, never in the image.
+data/
+
+# The Android project is only needed to produce the APK, which is built on a
+# workstation with the Android SDK, not in this image.
+kiosk/android/
+dist/
+
+**/node_modules
+**/dist
+**/.vite
+
+# A stale incremental-build stamp makes `tsc -b` skip emitting into a fresh image.
+**/tsconfig.tsbuildinfo
+
+*.log
+*.apk
+.env

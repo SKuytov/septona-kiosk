@@ -83,6 +83,10 @@ export function ServiceScreen({ lang, sync, onSyncNow, onClose }: Props) {
       if (conn) {
         setBaseUrl(conn.baseUrl);
         setDeviceKey(conn.deviceKey);
+      } else if (/^https?:$/.test(window.location.protocol) && window.location.hostname !== 'localhost') {
+        // Browser build: it is served by the same host as the API, so the address is
+        // already known and only the device key needs entering.
+        setBaseUrl(window.location.origin.replace(/\/+$/, ''));
       }
       setStats(await cacheStats());
       if (navigator.storage?.persisted) {

@@ -46,11 +46,32 @@ app.use('/api/kiosk', require('./routes/kiosk'));
 app.use('/api', require('./routes/admin'));
 app.use('/api', require('./routes/content'));
 
+// Kiosk web build (the same bundle that ships inside the APK) served at /kiosk, so
+// any browser on the network is an equivalent viewer. Mounted before the admin SPA
+// because the admin's catch-all would otherwise swallow these paths.
+const KIOSK_DIST = process.env.KIOSK_DIST || path.join(__dirname, '../../kiosk/dist');
+if (fs.existsSync(KIOSK_DIST)) {
+  // The service worker must be served from the mount root or its scope is too narrow
+  // to control /kiosk/, which would silently break offline caching in the browser.
+  app.use('/kiosk', express.static(KIOSK_DIST, {
+    index: 'index.html',
+    setHeaders: (res, filePath) => {
+      if (filePath.endsWith('sw.js')) {
+        res.setHeader('Service-Worker-Allowed', '/kiosk/');
+        res.setHeader('Cache-Control', 'no-cache');
+      }
+    },
+  }));
+  // The bundle is built with a relative base, so it only resolves correctly from a
+  // directory URL: /kiosk would look for /assets and /sw.js at the server root.
+  app.get('/kiosk', (_req, res) => res.redirect(301, '/kiosk/'));
+}
+
 // Admin SPA (built into admin/dist) served from the same origin.
 const ADMIN_DIST = process.env.ADMIN_DIST || path.join(__dirname, '../../admin/dist');
 if (fs.existsSync(ADMIN_DIST)) {
   app.use(express.static(ADMIN_DIST, { index: false }));
-  app.get(/^\/(?!api\/).*/, (_req, res) => res.sendFile(path.join(ADMIN_DIST, 'index.html')));
+  app.get(/^\/(?!api\/|kiosk(\/|$)).*/, (_req, res) => res.sendFile(path.join(ADMIN_DIST, 'index.html')));
 }
 
 app.use((_req, res) =>

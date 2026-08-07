@@ -613,7 +613,60 @@ mark { background: #fde68a; color: var(--sep-ink); border-radius: 3px; padding: 
   .scroll { padding: 18px; }
 }
 
-/* Portrait orientation — the panel can be wall-mounted either way. */
-@media (orientation: portrait) {
+/* ---------------------------------------------------------------- portrait
+   The TW2424AS is wall-mounted in portrait (1080x1920), which is the primary
+   deployment. Two things break if this is left to the width-based breakpoints
+   above: at 1080px wide they collapse the layout as though it were a small
+   landscape screen, and a single row of tabs cannot hold seven categories, so
+   the last ones scroll out of sight on a display nobody is going to swipe.
+
+   Anything narrower than ~700px really is a phone, and the small-screen rules
+   above are right for it, so this block is scoped to a genuine large panel. */
+@media (orientation: portrait) and (min-width: 700px) {
+  /* Header wraps instead of clipping: the actions drop onto their own row
+     when the title and status line need the width. */
+  .hdr {
+    height: auto;
+    flex: 0 0 auto;
+    flex-wrap: wrap;
+    row-gap: 14px;
+    padding: 18px 28px;
+  }
+  /* Explicit order so wrapping puts logo + title + clock on the first row and
+     drops the action buttons onto the second, rather than stranding the clock. */
+  .hdr__logo { order: 1; }
+  .hdr__titles { order: 2; flex: 1 1 60%; }
+  .hdr__clock { order: 3; }
+  .hdr__actions { order: 4; }
+  .hdr__title { font-size: 1.85rem; white-space: normal; }
+  .hdr__sub { display: flex; flex-wrap: wrap; white-space: normal; font-size: 0.95rem; }
+  .hdr__clock { display: block; }
+  .hdr__actions { flex: 1 1 100%; justify-content: flex-end; }
+  .sync span { display: inline; }
+
+  /* Every category stays visible on a second row rather than scrolling away. */
+  .rail {
+    height: auto;
+    flex: 0 0 auto;
+    flex-wrap: wrap;
+    row-gap: 12px;
+    padding: 16px 28px;
+    overflow: visible;
+  }
+  .rail__spacer { display: none; }
+
+  /* A 1080px-wide column fits two cards comfortably; one wastes half the panel
+     and stretches Cyrillic titles into short, hard-to-scan lines. */
+  .grid { grid-template-columns: repeat(2, 1fr); gap: 20px; }
+  .scroll { padding: 26px 28px 40px; }
+
+  /* Read at standing distance on a tall panel, so scale the content up. */
+  .cat-hd__t { font-size: 2rem; }
+  .cat-hd__s { font-size: 1.05rem; }
+  .card__t { font-size: 1.16rem; }
+}
+
+/* Portrait on an actual phone-sized screen keeps the single column. */
+@media (orientation: portrait) and (max-width: 699px) {
   .grid { grid-template-columns: 1fr; }
 }

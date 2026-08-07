@@ -7,6 +7,10 @@ The panel keeps a complete local copy of every published PDF. It reads from that
 all times, so page turns are instant and the board keeps working through a network
 outage. The network is used only to pull new or revised documents from the server.
 
+The panel app is **portrait-first**, matching the wall-mounted orientation of the
+display. The same interface is also served as a **web app at `/kiosk`**, so any browser
+on the network is an equivalent viewer.
+
 ---
 
 ## What is in here
@@ -16,8 +20,8 @@ outage. The network is used only to pull new or revised documents from the serve
 | `server/` | Node 20 + Express + PostgreSQL. Sync API for the panels, admin API, version store, audit log. |
 | `admin/` | Management platform (React + Vite). Upload and revise PDFs, manage categories, users, devices, view the audit trail. |
 | `kiosk/` | The panel app (React + Vite + pdf.js), wrapped with Capacitor into an Android APK. |
-| `deploy/` | Container image for the server. |
-| `docs/` | `API.md` — the API and brand contract. `OPERATIONS.md` — day-to-day runbook. |
+| `deploy/` | Container image for the server, plus `install.sh` — the one-command Ubuntu installer. |
+| `docs/` | `DEPLOYMENT.md` — Proxmox/Ubuntu install guide (BG). `API.md` — the API and brand contract. `OPERATIONS.md` — day-to-day runbook. |
 | `dist/` | Prebuilt, signed `septona-kiosk-1.0.0.apk`. |
 
 ---
@@ -26,15 +30,27 @@ outage. The network is used only to pull new or revised documents from the serve
 
 ### 1. Server
 
+On a fresh Ubuntu Server 22.04 / 24.04 machine — installs Docker, generates strong
+secrets and starts everything:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/SKuytov/septona-kiosk/main/deploy/install.sh | sudo bash
+```
+
+It prints the generated administrator password at the end. See
+[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) for the Proxmox VM setup, backups and
+troubleshooting.
+
+Manually, if you already run Docker:
+
 ```bash
 cp .env.example .env
 # edit .env: set JWT_SECRET and POSTGRES_PASSWORD
 docker compose up -d --build
 ```
 
-The management platform is then at `http://<server-ip>:8080`. Sign in with the
-credentials from `.env` (`admin@septona.local` / `septona-admin` by default) and change
-the password immediately.
+Either way the management platform is at `http://<server-ip>:8080` and the browser
+version of the kiosk at `http://<server-ip>:8080/kiosk/`.
 
 ### 2. Register the panel
 
@@ -53,6 +69,19 @@ unknown sources). Open it, then:
 
 The first sync downloads every published document. After that the panel is fully
 offline-capable.
+
+### 4. Or open it in a browser
+
+`http://<server-ip>:8080/kiosk/` runs the identical interface. It needs a device key
+too; either enter it through the same service screen, or hand it over once in the URL:
+
+```
+http://<server-ip>:8080/kiosk/?key=sk_xxxxxxxx_xxxxxxxxxxxx
+```
+
+The key is saved locally and removed from the address bar. The browser version is meant
+for desktops and phones on the network — the wall panels should run the APK, which is
+the build that is genuinely offline-capable.
 
 ---
 
@@ -150,6 +179,20 @@ npx cap sync android
 cd android && ./gradlew assembleRelease
 # → app/build/outputs/apk/release/app-release.apk
 ```
+
+### Screen orientation
+
+The APK is built **portrait** — the orientation the TW2424AS is wall-mounted in. It is a
+single string resource, so switching a build to landscape needs no code change:
+
+```xml
+<!-- kiosk/android/app/src/main/res/values/strings.xml -->
+<string name="kiosk_orientation">portrait</string>   <!-- or: landscape -->
+```
+
+Rebuild after changing it. The layout itself is responsive and handles both — the
+category bar wraps to two rows and the document grid drops to two columns in portrait —
+so this only pins which one the panel is locked to.
 
 ### Shipping a pre-configured APK
 

@@ -32,10 +32,39 @@ const BAKED: Connection | null = (() => {
   return baseUrl && deviceKey ? { baseUrl: baseUrl.replace(/\/+$/, ''), deviceKey } : null;
 })();
 
+/**
+ * True when the app is being served over http(s) by the kiosk server itself — i.e. the
+ * browser build at /kiosk — rather than running inside the APK, where Capacitor serves
+ * the bundle from a local file/https://localhost origin and the server is remote.
+ */
+const isHostedWeb = (): boolean =>
+  typeof window !== 'undefined' &&
+  /^https?:$/.test(window.location.protocol) &&
+  window.location.hostname !== 'localhost';
+
+/**
+ * The browser build is served by the same process that serves the API, so its server
+ * address is simply its own origin. Only the device key has to be supplied, through the
+ * service screen or a ?key= parameter.
+ */
+const sameOrigin = (): string => window.location.origin.replace(/\/+$/, '');
+
 export async function getConnection(): Promise<Connection | undefined> {
   const saved = await store.metaGet<Connection>(CONN_KEY);
   if (saved?.baseUrl && saved?.deviceKey) return saved;
-  return BAKED ?? undefined;
+  if (BAKED) return BAKED;
+  // A key can be handed to a browser kiosk by URL once: /kiosk/?key=sk_...
+  if (isHostedWeb()) {
+    const fromUrl = new URLSearchParams(window.location.search).get('key')?.trim();
+    if (fromUrl) {
+      const conn = { baseUrl: sameOrigin(), deviceKey: fromUrl };
+      void setConnection(conn);
+      // Drop the key from the address bar so it is not left in plain sight.
+      window.history.replaceState({}, '', window.location.pathname);
+      return conn;
+    }
+  }
+  return undefined;
 }
 
 export const setConnection = (c: Connection) =>

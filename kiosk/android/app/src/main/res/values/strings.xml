@@ -4,4 +4,8 @@
     <string name="title_activity_main">Septona Docs</string>
     <string name="package_name">bg.septona.kiosk</string>
     <string name="custom_url_scheme">bg.septona.kiosk</string>
+    <!-- Screen orientation for the kiosk activity. The Iiyama TW2424AS is
+         wall-mounted in portrait, so that is the default. Change to "landscape"
+         (or "sensorLandscape") and rebuild for a horizontally mounted panel. -->
+    <string name="kiosk_orientation">portrait</string>
 </resources>

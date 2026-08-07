@@ -86,6 +86,15 @@ export default function App() {
     };
   }, [configured, settings.syncIntervalMinutes, doSync]);
 
+  // Declared before every effect that lists it as a dependency: a dependency array
+  // is evaluated during render, so a later `const` would be in the temporal dead
+  // zone and throw "Cannot access 'noteActivity' before initialization".
+  const noteActivity = useCallback(() => {
+    lastTouch.current = Date.now();
+    setCycling(false);
+    setElapsed(0);
+  }, []);
+
   // ------------------------------------------------- hardware back button (APK)
   // MainActivity forwards Android's back press here instead of finishing the
   // activity, so back closes the topmost layer and never exits the kiosk.
@@ -157,12 +166,6 @@ export default function App() {
 
   // ------------------------------------------------------------- auto-cycling
   const busy = searching || !!openDoc || screen !== 'browse' || pinOpen;
-
-  const noteActivity = useCallback(() => {
-    lastTouch.current = Date.now();
-    setCycling(false);
-    setElapsed(0);
-  }, []);
 
   // Any touch anywhere counts as activity and pauses the carousel.
   useEffect(() => {
