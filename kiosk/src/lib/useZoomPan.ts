@@ -11,6 +11,14 @@
  *
  * Zoom is reported as a multiplier on whatever scale the caller is currently rendering, so
  * this hook never needs to know about fit modes or page geometry.
+ *
+ * A horizontal drag also turns the page, and that has to share the one finger that pans a
+ * zoomed page. The rule is the one every photo viewer uses: a sideways drag pans while the
+ * page still has room to move in that direction, and only turns the page once it has run out
+ * of room. At fit-width there is never any room, so a swipe always turns; zoomed in, the
+ * swipe walks to the edge of the page first and a second swipe turns it. The choice is made
+ * once, at the moment the drag declares a direction, and holds for the rest of that drag, so
+ * a gesture can never change its mind halfway through.
  */
 import { useCallback, useEffect, useRef } from 'react';
 
@@ -22,6 +30,20 @@ const DOUBLE_TAP_MS = 320;
 const MIN_FLICK = 0.05;
 /** Per-frame velocity decay for the glide. */
 const FRICTION = 0.94;
+/** A drag stays undecided until it has travelled this far, so a tap is never a swipe. */
+const DECIDE_SLOP = 10;
+/** A swipe must be this much more horizontal than vertical, or it is a scroll. */
+const H_DOMINANCE = 1.3;
+/** Fraction of the stage width a swipe must cover to turn the page. */
+const COMMIT_FRACTION = 0.22;
+/** ...but never more than this, so the gesture stays easy on a wide panel. */
+const COMMIT_MAX = 160;
+/** ...and never less than this, so it cannot be triggered by a careless nudge. */
+const COMMIT_MIN = 48;
+/** A fast flick turns the page even if it did not travel the full distance. */
+const COMMIT_VELOCITY = 0.45;
+/** How far a swipe follows the finger when there is no page to turn to. */
+const RUBBER = 0.25;
 
 interface Options {
   /** The scrollable element wrapping the canvas. */
@@ -34,16 +56,25 @@ interface Options {
   onDoubleTap: () => void;
   /** Any interaction, so the idle timer that resumes cycling is held off. */
   onActivity: () => void;
+  /** The page element, moved with the finger during a swipe. */
+  pageRef: React.RefObject<HTMLElement | null>;
+  /** A completed swipe: +1 for the next page, -1 for the previous one. */
+  onSwipe: (dir: 1 | -1) => void;
+  /** Whether a page exists in that direction. If not, the swipe rubber-bands back. */
+  canTurn: (dir: 1 | -1) => boolean;
   /** Disabled while the document is loading or has failed. */
   enabled: boolean;
 }
 
 export function useZoomPan({
   stageRef,
+  pageRef,
   currentScale,
   onScale,
   onDoubleTap,
   onActivity,
+  canTurn,
+  onSwipe,
   enabled,
 }: Options): void {
   /** Live pointers by id, so a second finger is recognised as a pinch. */
@@ -54,6 +85,22 @@ export function useZoomPan({
   const lastTap = useRef(0);
   const velocity = useRef({ x: 0, y: 0, at: 0 });
   const glide = useRef<number | null>(null);
+  /** null while a drag has not yet declared itself one thing or the other. */
+  const mode = useRef<'pan' | 'swipe' | null>(null);
+  const swipeDx = useRef(0);
+
+  /** Moves the page sideways with the finger. Written straight to the node rather than
+   *  through state: this runs on every pointer move and the panel's WebView is not fast
+   *  enough to re-render React at that rate. */
+  const dragPage = useCallback(
+    (dx: number, settle: boolean) => {
+      const el = pageRef.current;
+      if (!el) return;
+      el.style.transition = settle ? 'transform 180ms cubic-bezier(.2,.7,.3,1)' : 'none';
+      el.style.transform = dx ? `translateX(${dx}px)` : '';
+    },
+    [pageRef]
+  );
 
   const stopGlide = useCallback(() => {
     if (glide.current !== null) {
@@ -83,6 +130,8 @@ export function useZoomPan({
         pan.current = null;
       } else if (pointers.current.size === 1) {
         moved.current = 0;
+        mode.current = null;
+        swipeDx.current = 0;
         velocity.current = { x: 0, y: 0, at: e.timeStamp };
         pan.current = { x: e.clientX, y: e.clientY, left: stage.scrollLeft, top: stage.scrollTop };
       }
@@ -102,12 +151,44 @@ export function useZoomPan({
         return;
       }
 
-      // ---- pan ----
+      // ---- pan or swipe ----
       const start = pan.current;
       if (!start) return;
       const dx = e.clientX - start.x;
       const dy = e.clientY - start.y;
       moved.current = Math.max(moved.current, Math.hypot(dx, dy));
+
+      /*
+        Decide what this drag is, once, as soon as it has travelled far enough to have a
+        direction. Dragging the page to the left asks for the next page, which is also the
+        direction that scrolls the stage to the right; if the stage still has somewhere to
+        scroll, the drag is panning a zoomed page and the page must not turn under it.
+      */
+      if (mode.current === null && moved.current >= DECIDE_SLOP) {
+        const horizontal = Math.abs(dx) > Math.abs(dy) * H_DOMINANCE;
+        const dir: 1 | -1 = dx < 0 ? 1 : -1;
+        const maxScroll = stage.scrollWidth - stage.clientWidth;
+        const room = dir === 1 ? start.left < maxScroll - 1 : start.left > 1;
+        mode.current = horizontal && !room ? 'swipe' : 'pan';
+      }
+
+      if (mode.current === 'swipe') {
+        // Beyond the first or last page the drag still follows the finger, but heavily
+        // damped, so the panel answers the gesture instead of ignoring it.
+        const dir: 1 | -1 = dx < 0 ? 1 : -1;
+        swipeDx.current = canTurn(dir) ? dx : dx * RUBBER;
+        dragPage(swipeDx.current, false);
+        const dt0 = e.timeStamp - velocity.current.at;
+        if (dt0 > 0) {
+          velocity.current = {
+            x: (e.clientX - previous.x) / dt0,
+            y: (e.clientY - previous.y) / dt0,
+            at: e.timeStamp,
+          };
+        }
+        return;
+      }
+
       stage.scrollLeft = start.left - dx;
       stage.scrollTop = start.top - dy;
 
@@ -136,6 +217,21 @@ export function useZoomPan({
       }
 
       pan.current = null;
+
+      if (mode.current === 'swipe') {
+        const dx = swipeDx.current;
+        const dir: 1 | -1 = dx < 0 ? 1 : -1;
+        const needed = Math.min(Math.max(stage.clientWidth * COMMIT_FRACTION, COMMIT_MIN), COMMIT_MAX);
+        const flicked = Math.abs(velocity.current.x) > COMMIT_VELOCITY;
+        const committed = canTurn(dir) && (Math.abs(dx) >= needed || flicked);
+        mode.current = null;
+        swipeDx.current = 0;
+        dragPage(0, true);
+        if (committed) onSwipe(dir);
+        return;
+      }
+
+      mode.current = null;
 
       // A press that never travelled is a tap; two in quick succession toggle the zoom.
       if (moved.current < TAP_SLOP) {
@@ -188,6 +284,20 @@ export function useZoomPan({
       pointers.current.clear();
       pinch.current = null;
       pan.current = null;
+      mode.current = null;
+      swipeDx.current = 0;
+      dragPage(0, false);
     };
-  }, [stageRef, enabled, currentScale, onScale, onDoubleTap, onActivity, stopGlide]);
+  }, [
+    stageRef,
+    enabled,
+    currentScale,
+    onScale,
+    onDoubleTap,
+    onActivity,
+    stopGlide,
+    canTurn,
+    onSwipe,
+    dragPage,
+  ]);
 }

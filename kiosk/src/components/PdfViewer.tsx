@@ -72,6 +72,10 @@ export function PdfViewer({
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
+  /** Pages are drawn here first and copied across when finished; see render(). */
+  const offscreenRef = useRef<HTMLCanvasElement | null>(null);
+  /** Guards against an older render finishing after a newer one and overwriting it. */
+  const renderSeq = useRef(0);
   const pdfRef = useRef<PDFDocumentProxy | null>(null);
   const renderTaskRef = useRef<{ cancel: () => void } | null>(null);
   /** The scale actually on screen, so pinch and the zoom buttons agree with the fit modes. */
@@ -81,6 +85,8 @@ export function PdfViewer({
   const [pageCount, setPageCount] = useState(doc.pageCount || 0);
   const [scale, setScale] = useState(1);
   const [fit, setFit] = useState<FitMode>('width');
+  /** True from the moment a swipe turns the page until the new one is on screen. */
+  const [turning, setTurning] = useState(false);
   /**
    * The rendered scale, mirrored into state purely so the percentage in the toolbar updates.
    * `renderedScale` is a ref because the gesture handlers read it without wanting a re-render;
@@ -186,6 +192,7 @@ export function PdfViewer({
     if (!pdf || !canvas || !stage) return;
 
     renderTaskRef.current?.cancel();
+    const seq = ++renderSeq.current;
 
     try {
       const page = await pdf.getPage(pageNum);
@@ -211,23 +218,47 @@ export function PdfViewer({
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
       const viewport = page.getViewport({ scale: effective });
 
-      canvas.width = Math.floor(viewport.width * dpr);
-      canvas.height = Math.floor(viewport.height * dpr);
-      canvas.style.width = `${Math.floor(viewport.width)}px`;
-      canvas.style.height = `${Math.floor(viewport.height)}px`;
+      /*
+        Draw into an off-screen canvas and copy the finished page across in one go.
 
-      const ctx = canvas.getContext('2d', { alpha: false });
-      if (!ctx) return;
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      ctx.fillStyle = '#fff';
-      ctx.fillRect(0, 0, viewport.width, viewport.height);
+        Rendering straight into the visible canvas means clearing it first, so every page
+        turn showed an empty rectangle for as long as the render took — on a swipe, with the
+        page dimmed, that looked like the document had failed rather than like it was
+        turning. Off-screen, the page that is already on the panel stays there untouched
+        until its replacement is complete.
+      */
+      const off = offscreenRef.current || document.createElement('canvas');
+      offscreenRef.current = off;
+      off.width = Math.floor(viewport.width * dpr);
+      off.height = Math.floor(viewport.height * dpr);
 
-      const task = page.render({ canvasContext: ctx, viewport });
+      const octx = off.getContext('2d', { alpha: false });
+      if (!octx) return;
+      octx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      octx.fillStyle = '#fff';
+      octx.fillRect(0, 0, viewport.width, viewport.height);
+
+      const task = page.render({ canvasContext: octx, viewport });
       renderTaskRef.current = task;
       await task.promise;
       renderTaskRef.current = null;
+
+      // A newer render may have been started and finished while this one was waiting; only
+      // the most recent one is allowed to reach the screen.
+      if (renderSeq.current !== seq) return;
+
+      canvas.width = off.width;
+      canvas.height = off.height;
+      canvas.style.width = `${Math.floor(viewport.width)}px`;
+      canvas.style.height = `${Math.floor(viewport.height)}px`;
+      const ctx = canvas.getContext('2d', { alpha: false });
+      if (!ctx) return;
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.drawImage(off, 0, 0);
+      setTurning(false);
     } catch (e) {
       if ((e as Error)?.name !== 'RenderingCancelledException') {
+        setTurning(false);
         setError(t(lang, 'openFailed'));
         setErrKind('engine');
         setDetail(errText(e));
@@ -278,6 +309,28 @@ export function PdfViewer({
   const go = (delta: number) =>
     setPageNum((p) => Math.min(Math.max(1, p + delta), Math.max(1, pageCount)));
 
+  /** Whether there is a page to swipe to. Beyond the ends the gesture rubber-bands back
+   *  rather than doing nothing, so the reader can tell the panel felt the swipe. */
+  const canTurn = useCallback(
+    (dir: 1 | -1) => (dir === 1 ? pageNum < pageCount : pageNum > 1),
+    [pageNum, pageCount]
+  );
+
+  /*
+    A swipe turns the page and dims it until the new one has been drawn. The page is not
+    animated off the screen: the canvas keeps showing the old page until pdf.js has finished
+    rendering, so sliding it away would slide the wrong page out and then snap. A short dim
+    is honest about what is happening and cannot look broken on a slow panel.
+  */
+  const onSwipe = useCallback(
+    (dir: 1 | -1) => {
+      setTurning(true);
+      onActivity();
+      setPageNum((p) => Math.min(Math.max(1, p + dir), Math.max(1, pageCount)));
+    },
+    [pageCount, onActivity]
+  );
+
   /** Applies an absolute scale, leaving whichever fit mode was active. */
   const applyScale = useCallback((next: number) => {
     setScale(Math.max(MIN_SCALE, Math.min(MAX_SCALE, next)));
@@ -296,6 +349,9 @@ export function PdfViewer({
 
   useZoomPan({
     stageRef,
+    pageRef: canvasRef,
+    canTurn,
+    onSwipe,
     currentScale,
     onScale: applyScale,
     onDoubleTap,
@@ -400,7 +456,7 @@ export function PdfViewer({
         </div>
       ) : (
         <div className="vw__stage" ref={stageRef}>
-          <canvas className="vw__canvas" ref={canvasRef} />
+          <canvas className={`vw__canvas ${turning ? 'vw__canvas--turning' : ''}`} ref={canvasRef} />
         </div>
       )}
 

@@ -906,6 +906,18 @@ mark { background: #fde68a; color: var(--sep-ink); border-radius: 3px; padding: 
    which `align-items: center` on its own would not. */
 .vw__canvas { margin: auto; }
 
+/* A swipe dims the page slightly until the next one has been drawn. The page itself is not
+   animated off the screen: the new page is rendered off-screen and copied across when it is
+   ready, so the page on the panel is always a real page, never a blank. The dim is only there
+   to say "working" on a slow render. The inline transform that follows the finger during the
+   swipe is written by useZoomPan. */
+.vw__canvas--turning { opacity: 0.72; }
+.vw__canvas { transition: opacity 120ms linear; will-change: transform; }
+
+@media (prefers-reduced-motion: reduce) {
+  .vw__canvas { transition: none; }
+}
+
 /* ============================================================ reading layout
    With a document open the board becomes a way of getting to the next document rather
    than the thing being looked at, so the header and the category rail hand some of

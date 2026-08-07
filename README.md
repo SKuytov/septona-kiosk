@@ -59,7 +59,7 @@ In the admin platform, go to **Устройства → Ново устройс�
 
 ### 3. Install the app
 
-Copy `dist/septona-kiosk-1.0.3.apk` to the panel and install it (allow installation from
+Copy `dist/septona-kiosk-1.0.4.apk` to the panel and install it (allow installation from
 unknown sources). Open it, then:
 
 1. Press and hold the Septona logo in the top-left for **3 seconds**. If holding does
@@ -82,8 +82,16 @@ in the top-left of the document bar collapses that column so the page takes the 
 width, and the expand button next to it hides the header and category rail as well.
 
 The page can be pinched to zoom with two fingers, dragged with one, and double-tapped to
-alternate between fit-to-width and 200%. The footer has the same controls for panels
-without a touchscreen. Below 760 pixels — a phone — the document opens over the board
+alternate between fit-to-width and 200%. Swiping left and right turns the page, and the
+footer keeps the same controls as buttons for panels without a touchscreen.
+
+A swipe and a drag share the one finger, so they are told apart the way a photo viewer
+does it: a sideways drag pans while the page still has room to move that way, and turns
+the page only once it has run out. At fit-to-width there is never any room, so a swipe
+always turns. Zoomed in, the swipe reaches the edge of the page first and the next one
+turns it. Past the first or last page the drag follows the finger a little and springs
+back, so the panel visibly answers the gesture. A short slow drag springs back too; a
+quick flick turns the page without having to travel the full width. Below 760 pixels — a phone — the document opens over the board
 instead, because a split of that width leaves neither half usable.
 
 ### 4. Or open it in a browser
