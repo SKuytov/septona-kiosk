@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The management server normally lives on the plant LAN, reachable only over plain
+  HTTP at an IP address. Cleartext is therefore permitted, but HTTPS is used whenever
+  the configured server address uses it, so a reverse-proxied deployment needs no
+  change to the APK.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="user" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

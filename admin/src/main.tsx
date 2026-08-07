@@ -1,0 +1,20 @@
+import React from 'react'
+import ReactDOM from 'react-dom/client'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { HashRouter, Navigate, Route, Routes } from 'react-router-dom'
+import './app.css'
+import { AuthProvider } from './auth'
+import { AppLayout, RequireRole } from './components/AppLayout'
+import { ToastProvider } from './components/ui'
+import { LoginPage } from './pages/LoginPage'
+import { DashboardPage } from './pages/DashboardPage'
+import { CategoriesPage } from './pages/CategoriesPage'
+import { DocumentsPage } from './pages/DocumentsPage'
+import { DocumentDetailPage } from './pages/DocumentDetailPage'
+import { AuditPage } from './pages/AuditPage'
+import { UsersPage } from './pages/UsersPage'
+import { DevicesPage } from './pages/DevicesPage'
+import { SettingsPage } from './pages/SettingsPage'
+
+const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } } })
+ReactDOM.createRoot(document.getElementById('root')!).render(<React.StrictMode><QueryClientProvider client={queryClient}><AuthProvider><ToastProvider><HashRouter><a className="skip-link" href="#main-content">Към основното съдържание</a><Routes><Route path="/login" element={<LoginPage/>}/><Route element={<AppLayout/>}><Route index element={<DashboardPage/>}/><Route path="categories" element={<RequireRole roles={['admin','editor']}><CategoriesPage/></RequireRole>}/><Route path="documents" element={<DocumentsPage/>}/><Route path="documents/:id" element={<DocumentDetailPage/>}/><Route path="audit" element={<AuditPage/>}/><Route path="users" element={<RequireRole roles={['admin']}><UsersPage/></RequireRole>}/><Route path="devices" element={<RequireRole roles={['admin']}><DevicesPage/></RequireRole>}/><Route path="settings" element={<RequireRole roles={['admin']}><SettingsPage/></RequireRole>}/></Route><Route path="*" element={<Navigate to="/" replace/>}/></Routes></HashRouter></ToastProvider></AuthProvider></QueryClientProvider></React.StrictMode>)

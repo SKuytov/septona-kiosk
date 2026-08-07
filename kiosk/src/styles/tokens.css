@@ -1,0 +1,79 @@
+:root {
+  /* Brand — sampled from the Septona logo */
+  --sep-navy: #26307a;
+  --sep-navy-deep: #1b2359;
+  --sep-navy-soft: #3a45a0;
+  --sep-blue: #2e8bc9;
+  --sep-blue-light: #6fb6e3;
+  --sep-blue-pale: #e8f2fa;
+  --sep-paper: #f4f7fb;
+  --sep-white: #ffffff;
+  --sep-ink: #1a1f36;
+  --sep-ink-muted: #5b6478;
+  --sep-line: #dde4ee;
+  --sep-ok: #1f8a5b;
+  --sep-warn: #c77700;
+  --sep-danger: #c0392b;
+
+  --radius-sm: 8px;
+  --radius: 14px;
+  --radius-lg: 22px;
+
+  --shadow-sm: 0 1px 2px rgba(26, 31, 54, 0.06), 0 2px 6px rgba(26, 31, 54, 0.05);
+  --shadow: 0 2px 6px rgba(26, 31, 54, 0.07), 0 10px 24px rgba(26, 31, 54, 0.08);
+  --shadow-lg: 0 12px 32px rgba(26, 31, 54, 0.16), 0 32px 64px rgba(26, 31, 54, 0.14);
+
+  --header-h: 92px;
+  --rail-h: 84px;
+
+  --font: 'Inter', 'Noto Sans', system-ui, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+
+  /* Kiosk base size — tuned for a 24" 1920×1080 panel at arm's length */
+  font-size: 18px;
+}
+
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+body {
+  font-family: var(--font);
+  color: var(--sep-ink);
+  background: var(--sep-paper);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  /* A kiosk must not let users select text or trigger the browser's context menu. */
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  overscroll-behavior: none;
+}
+
+button { font-family: inherit; cursor: pointer; border: none; background: none; color: inherit; }
+input { font-family: inherit; }
+
+/* Every interactive element clears the 56px minimum touch target. */
+.touch { min-width: 56px; min-height: 56px; }
+
+::-webkit-scrollbar { width: 12px; height: 12px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: rgba(38, 48, 122, 0.22);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover { background: rgba(38, 48, 122, 0.38); background-clip: content-box; }
+
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes riseIn { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}

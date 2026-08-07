@@ -1,0 +1,61 @@
+# Septona Kiosk — management server + database.
+#
+#   docker compose up -d --build
+#
+# The admin panel and the kiosk sync API are both served by the `server` container on
+# port 8080. Copy .env.example to .env and change JWT_SECRET and POSTGRES_PASSWORD
+# before putting this on a network.
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-septona}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-septona}
+      POSTGRES_DB: ${POSTGRES_DB:-septona_kiosk}
+      # Bulgarian text is sorted and searched in the app, so the database is created
+      # with a UTF-8 collation rather than the image default.
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C.UTF-8"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-septona} -d ${POSTGRES_DB:-septona_kiosk}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  server:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 8080
+      DATABASE_URL: postgres://${POSTGRES_USER:-septona}:${POSTGRES_PASSWORD:-septona}@db:5432/${POSTGRES_DB:-septona_kiosk}
+      DATA_DIR: /data
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+      ADMIN_DIST: /app/admin/dist
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@septona.local}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-septona-admin}
+    ports:
+      - "${HTTP_PORT:-8080}:8080"
+    volumes:
+      # PDF bytes live on a named volume, not in the image or the database, so the
+      # container can be rebuilt at will without touching documents.
+      - files:/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  db-data:
+  files:

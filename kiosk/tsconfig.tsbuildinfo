@@ -1,0 +1,1 @@
+{"root":["./src/App.tsx","./src/main.tsx","./src/vite-env.d.ts","./src/components/DocCard.tsx","./src/components/Icon.tsx","./src/components/PdfViewer.tsx","./src/components/SearchOverlay.tsx","./src/components/ServiceScreen.tsx","./src/lib/i18n.ts","./src/lib/store.ts","./src/lib/sync.ts","./src/lib/types.ts"],"checkPending":true,"version":"5.9.3"}

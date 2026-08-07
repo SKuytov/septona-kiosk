@@ -1,0 +1,12 @@
+import { NavLink, Navigate, Outlet, useLocation } from 'react-router-dom'
+import logo from '../assets/septona-logo.jpg'
+import { useAuth } from '../auth'
+import { Button, Icon, type UiIcon } from './ui'
+import type { Role } from '../types'
+
+const navigation: Array<{to:string; label:string; icon:UiIcon; roles?:Role[]}> = [
+  {to:'/',label:'Обзор',icon:'dashboard'}, {to:'/categories',label:'Категории',icon:'categories',roles:['admin','editor']}, {to:'/documents',label:'Документи',icon:'documents',roles:['admin','editor','viewer']}, {to:'/audit',label:'Одит дневник',icon:'audit'}, {to:'/users',label:'Потребители',icon:'users',roles:['admin']}, {to:'/devices',label:'Устройства',icon:'devices',roles:['admin']}, {to:'/settings',label:'Настройки',icon:'settings',roles:['admin']}
+]
+const titles: Record<string,string> = {'/':'Обзор','/categories':'Категории','/documents':'Документи','/audit':'Одит дневник','/users':'Потребители','/devices':'Устройства','/settings':'Настройки'}
+export function AppLayout() { const { user, logout } = useAuth(); const location = useLocation(); if (!user) return <Navigate to="/login" replace/>; return <div className="app-shell"><aside className="sidebar"><div className="brand"><img src={logo} alt="Septona"/></div><nav aria-label="Основна навигация"><ul className="nav-list">{navigation.filter(item => !item.roles || item.roles.includes(user.role)).map(item => <li key={item.to}><NavLink end={item.to === '/'} to={item.to} className={({isActive}) => `nav-item ${isActive ? 'active' : ''}`}><Icon name={item.icon}/><span>{item.label}</span></NavLink></li>)}</ul></nav><div className="sidebar__bottom"><div className="account"><span className="account__initial">{user.name.charAt(0).toLocaleUpperCase('bg')}</span><div className="account__copy"><strong>{user.name}</strong><small>{user.role === 'admin' ? 'Администратор' : user.role === 'editor' ? 'Редактор' : 'Наблюдател'}</small></div></div><Button className="sidebar__logout" variant="quiet" onClick={logout}><Icon name="logout"/><span>Изход</span></Button></div></aside><main className="main" id="main-content"><header className="topbar"><span className="topbar__title">{titles[location.pathname] || 'Администрация'}</span><span className="topbar__meta">Система за управление на документни киоски</span></header><Outlet/></main></div> }
+export function RequireRole({ roles, children }: { roles: Role[]; children: React.ReactNode }) { const { user } = useAuth(); return user && roles.includes(user.role) ? <>{children}</> : <Navigate to="/" replace/> }

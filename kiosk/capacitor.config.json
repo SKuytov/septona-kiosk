@@ -1,0 +1,22 @@
+{
+  "appId": "bg.septona.kiosk",
+  "appName": "Septona Docs",
+  "webDir": "dist",
+  "bundledWebRuntime": false,
+  "android": {
+    "allowMixedContent": true,
+    "captureInput": false,
+    "webContentsDebuggingEnabled": false
+  },
+  "server": {
+    "androidScheme": "http"
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchAutoHide": true,
+      "launchShowDuration": 600,
+      "backgroundColor": "#26307AFF",
+      "showSpinner": false
+    }
+  }
+}

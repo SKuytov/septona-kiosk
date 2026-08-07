@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Septona brand navy / blue -->
+    <color name="colorPrimary">#26307A</color>
+    <color name="colorPrimaryDark">#1B2359</color>
+    <color name="colorAccent">#2E8BC9</color>
+    <color name="splashBackground">#26307A</color>
+    <color name="ic_launcher_background">#26307A</color>
+</resources>
