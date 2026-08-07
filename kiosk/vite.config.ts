@@ -12,9 +12,13 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks: {
-          // The legacy engine build, for older Android WebViews — see src/lib/pdfEngine.ts.
-          pdfjs: ['pdfjs-dist/legacy/build/pdf.mjs'],
           react: ['react', 'react-dom'],
+          /*
+            The PDF engine is deliberately NOT named here. Naming a chunk puts it in the
+            initial graph, so the engine was fetched and parsed before the panel could show
+            anything even though the only thing importing it is loaded on demand. Left alone,
+            it is bundled into the viewer's own chunk and arrives with it.
+          */
         },
       },
     },

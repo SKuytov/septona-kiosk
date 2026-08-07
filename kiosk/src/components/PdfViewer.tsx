@@ -44,6 +44,19 @@ const MIN_SCALE = 0.25;
 const MAX_SCALE = 6;
 /** Stage padding, kept in step with `.vw__stage` in app.css. */
 const STAGE_PAD = 44;
+/** Breathing room kept around a page that is larger than the stage. Half of STAGE_PAD on
+ *  each side, so a fit-to-width page lands exactly on this margin. */
+const EDGE_PAD = 22;
+/** How many finished pages to keep. */
+const CACHE_MAX_PAGES = 4;
+/** A page bigger than this is not cached: at 2x device pixels it is already ~24MB. */
+const CACHE_MAX_PIXELS = 6_000_000;
+/** Long enough that the neighbours are drawn after the current page has settled. */
+const PREFETCH_DELAY_MS = 260;
+/** A turn faster than this needs no feedback — it has already happened. */
+const DIM_AFTER_MS = 140;
+/** Long enough to let a rotation or a collapsing list finish, short enough not to be felt. */
+const RESIZE_SETTLE_MS = 90;
 
 interface Props {
   doc: Doc;
@@ -72,10 +85,23 @@ export function PdfViewer({
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
-  /** Pages are drawn here first and copied across when finished; see render(). */
-  const offscreenRef = useRef<HTMLCanvasElement | null>(null);
   /** Guards against an older render finishing after a newer one and overwriting it. */
   const renderSeq = useRef(0);
+  /** A pending request to keep one point of the page under one point of the screen across
+   *  the next render, so zooming does not throw away the reader's place. */
+  const anchorRef = useRef<{ u: number; v: number; x: number; y: number } | null>(null);
+  /*
+    Finished pages, keyed by page number and the scale they were drawn at. A page turn that
+    hits this cache is a single copy of pixels instead of a fresh parse and rasterise, which
+    is the difference between a page appearing at once and appearing after a visible pause.
+    The pages either side of the current one are drawn into it while the panel is idle, so
+    swiping forwards or backwards normally lands on a page that is already finished.
+  */
+  const pageCache = useRef(new Map<string, HTMLCanvasElement>());
+  const prerenderRef = useRef<{ cancel: () => void } | null>(null);
+  const idleRef = useRef<number | null>(null);
+  /** Pending "this turn is taking a moment" dim; see the page-turn handler. */
+  const dimRef = useRef<number | null>(null);
   const pdfRef = useRef<PDFDocumentProxy | null>(null);
   const renderTaskRef = useRef<{ cancel: () => void } | null>(null);
   /** The scale actually on screen, so pinch and the zoom buttons agree with the fit modes. */
@@ -106,6 +132,9 @@ export function PdfViewer({
     setError(null);
     setDetail(null);
     setPageNum(1);
+    // Pages of the previous document must not be shown for this one, and holding onto their
+    // canvases would keep tens of megabytes alive for a document nobody is reading.
+    pageCache.current.clear();
 
     (async () => {
       try {
@@ -179,10 +208,102 @@ export function PdfViewer({
     return () => {
       cancelled = true;
       renderTaskRef.current?.cancel();
+      prerenderRef.current?.cancel();
+      if (idleRef.current !== null) clearTimeout(idleRef.current);
+      if (dimRef.current !== null) clearTimeout(dimRef.current);
+      pageCache.current.clear();
       pdfRef.current?.destroy();
       pdfRef.current = null;
     };
   }, [doc.versionId, lang]);
+
+  /*
+    Centres the page by padding the stage rather than by centring a flex item.
+
+    Flex centring cannot be used here: once the page is wider than the stage the overflow
+    goes off both sides, and the part past the start edge sits at a negative offset that
+    scrollLeft can never reach, so the left of a zoomed page was unreachable. Padding puts
+    that space inside the scrollable area, which centres a small page and leaves a large one
+    fully pannable. Recomputed on every render because the page size changes with the zoom.
+  */
+  const centre = useCallback((cssW: number, cssH: number) => {
+    const stage = stageRef.current;
+    if (!stage) return;
+    const padX = Math.max(EDGE_PAD, Math.round((stage.clientWidth - cssW) / 2));
+    const padY = Math.max(EDGE_PAD, Math.round((stage.clientHeight - cssH) / 2));
+    stage.style.padding = `${padY}px ${padX}px`;
+  }, []);
+
+  /** Scale is part of the key: the same page at a different zoom is a different picture. */
+  const cacheKey = (n: number, sc: number) => `${n}@${sc.toFixed(3)}`;
+
+  /** Keeps the cache small. Four pages at a comfortable reading zoom is a few tens of
+   *  megabytes, which a panel can hold; a deeply zoomed page is not worth keeping at all. */
+  const remember = useCallback((key: string, c: HTMLCanvasElement) => {
+    if (c.width * c.height > CACHE_MAX_PIXELS) return;
+    const cache = pageCache.current;
+    cache.delete(key);
+    cache.set(key, c);
+    while (cache.size > CACHE_MAX_PAGES) {
+      const oldest = cache.keys().next().value;
+      if (oldest === undefined) break;
+      cache.delete(oldest);
+    }
+  }, []);
+
+  /** Draws a page into an off-screen canvas without touching the screen. */
+  const renderToCache = useCallback(
+    async (n: number, sc: number, dpr: number) => {
+      const pdf = pdfRef.current;
+      if (!pdf || n < 1 || n > pdf.numPages) return;
+      const key = cacheKey(n, sc);
+      if (pageCache.current.has(key)) return;
+      const page = await pdf.getPage(n);
+      const viewport = page.getViewport({ scale: sc });
+      const c = document.createElement('canvas');
+      c.width = Math.floor(viewport.width * dpr);
+      c.height = Math.floor(viewport.height * dpr);
+      if (c.width * c.height > CACHE_MAX_PIXELS) return;
+      const ctx = c.getContext('2d', { alpha: false });
+      if (!ctx) return;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, 0, viewport.width, viewport.height);
+      const task = page.render({ canvasContext: ctx, viewport });
+      prerenderRef.current = task;
+      await task.promise;
+      prerenderRef.current = null;
+      remember(key, c);
+    },
+    [remember]
+  );
+
+  /*
+    Draw the neighbours once the panel has nothing better to do. Deliberately not awaited by
+    the caller: a pre-render must never delay the page the reader is actually looking at, and
+    if it is still going when they turn the page it is cancelled rather than finished.
+  */
+  const prefetchNeighbours = useCallback(
+    (n: number, sc: number, dpr: number) => {
+      if (idleRef.current !== null) {
+        clearTimeout(idleRef.current);
+        idleRef.current = null;
+      }
+      idleRef.current = window.setTimeout(() => {
+        idleRef.current = null;
+        void (async () => {
+          try {
+            await renderToCache(n + 1, sc, dpr);
+            await renderToCache(n - 1, sc, dpr);
+          } catch {
+            // A cancelled or failed pre-render is not a problem worth reporting: the page
+            // will simply be drawn normally when it is asked for.
+          }
+        })();
+      }, PREFETCH_DELAY_MS);
+    },
+    [renderToCache]
+  );
 
   // ---- render the current page ------------------------------------------------
   const render = useCallback(async () => {
@@ -218,6 +339,51 @@ export function PdfViewer({
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
       const viewport = page.getViewport({ scale: effective });
 
+      const cssW = Math.floor(viewport.width);
+      const cssH = Math.floor(viewport.height);
+
+      /** Copies a finished page onto the panel, then re-centres and re-anchors it. */
+      const paint = (src: HTMLCanvasElement) => {
+        canvas.width = src.width;
+        canvas.height = src.height;
+        canvas.style.width = `${cssW}px`;
+        canvas.style.height = `${cssH}px`;
+        const ctx = canvas.getContext('2d', { alpha: false });
+        if (!ctx) return;
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.drawImage(src, 0, 0);
+        centre(cssW, cssH);
+
+        /*
+          Put the anchored point back under the finger. Reading the canvas rect here forces
+          the layout that the new size and padding just invalidated, so the correction is
+          measured against where the page actually ended up rather than where it was
+          predicted to be.
+        */
+        const anchor = anchorRef.current;
+        if (anchor) {
+          anchorRef.current = null;
+          const r = canvas.getBoundingClientRect();
+          stage.scrollLeft += r.left + anchor.u * r.width - anchor.x;
+          stage.scrollTop += r.top + anchor.v * r.height - anchor.y;
+        }
+        if (dimRef.current !== null) {
+          clearTimeout(dimRef.current);
+          dimRef.current = null;
+        }
+        setTurning(false);
+      };
+
+      // Already drawn at this exact size — most page turns land here, and cost one copy.
+      const key = cacheKey(pageNum, effective);
+      const hit = pageCache.current.get(key);
+      if (hit) {
+        paint(hit);
+        remember(key, hit); // Touch it, so it is the last of the four to be dropped.
+        prefetchNeighbours(pageNum, effective, dpr);
+        return;
+      }
+
       /*
         Draw into an off-screen canvas and copy the finished page across in one go.
 
@@ -227,8 +393,7 @@ export function PdfViewer({
         turning. Off-screen, the page that is already on the panel stays there untouched
         until its replacement is complete.
       */
-      const off = offscreenRef.current || document.createElement('canvas');
-      offscreenRef.current = off;
+      const off = document.createElement('canvas');
       off.width = Math.floor(viewport.width * dpr);
       off.height = Math.floor(viewport.height * dpr);
 
@@ -238,6 +403,8 @@ export function PdfViewer({
       octx.fillStyle = '#fff';
       octx.fillRect(0, 0, viewport.width, viewport.height);
 
+      // A pre-render of a neighbour must not compete with the page being waited on.
+      prerenderRef.current?.cancel();
       const task = page.render({ canvasContext: octx, viewport });
       renderTaskRef.current = task;
       await task.promise;
@@ -247,15 +414,9 @@ export function PdfViewer({
       // the most recent one is allowed to reach the screen.
       if (renderSeq.current !== seq) return;
 
-      canvas.width = off.width;
-      canvas.height = off.height;
-      canvas.style.width = `${Math.floor(viewport.width)}px`;
-      canvas.style.height = `${Math.floor(viewport.height)}px`;
-      const ctx = canvas.getContext('2d', { alpha: false });
-      if (!ctx) return;
-      ctx.setTransform(1, 0, 0, 1, 0, 0);
-      ctx.drawImage(off, 0, 0);
-      setTurning(false);
+      paint(off);
+      remember(key, off);
+      prefetchNeighbours(pageNum, effective, dpr);
     } catch (e) {
       if ((e as Error)?.name !== 'RenderingCancelledException') {
         setTurning(false);
@@ -264,7 +425,7 @@ export function PdfViewer({
         setDetail(errText(e));
       }
     }
-  }, [pageNum, scale, fit, lang]);
+  }, [pageNum, scale, fit, lang, centre, remember, prefetchNeighbours]);
 
   useEffect(() => {
     if (!loading && !error) void render();
@@ -275,8 +436,22 @@ export function PdfViewer({
   useEffect(() => {
     if (loading || error) return;
     const stage = stageRef.current;
-    const onResize = () => void render();
-    window.addEventListener('resize', onResize);
+
+    /*
+      Coalesce the burst. Rotating the panel, collapsing the list or entering full screen all
+      fire a run of size changes, and rasterising the page for each intermediate size wastes
+      the work and leaves the page visibly catching up. Only the size it settles at is drawn.
+    */
+    let pending: number | null = null;
+    const schedule = () => {
+      if (pending !== null) clearTimeout(pending);
+      pending = window.setTimeout(() => {
+        pending = null;
+        void render();
+      }, RESIZE_SETTLE_MS);
+    };
+
+    window.addEventListener('resize', schedule);
 
     let ro: ResizeObserver | null = null;
     if (stage && typeof ResizeObserver !== 'undefined') {
@@ -285,13 +460,14 @@ export function PdfViewer({
         const now = `${stage.clientWidth}x${stage.clientHeight}`;
         if (now === last) return; // Ignore the observer's own initial callback.
         last = now;
-        void render();
+        schedule();
       });
       ro.observe(stage);
     }
 
     return () => {
-      window.removeEventListener('resize', onResize);
+      window.removeEventListener('resize', schedule);
+      if (pending !== null) clearTimeout(pending);
       ro?.disconnect();
     };
   }, [render, loading, error]);
@@ -317,14 +493,24 @@ export function PdfViewer({
   );
 
   /*
-    A swipe turns the page and dims it until the new one has been drawn. The page is not
-    animated off the screen: the canvas keeps showing the old page until pdf.js has finished
-    rendering, so sliding it away would slide the wrong page out and then snap. A short dim
-    is honest about what is happening and cannot look broken on a slow panel.
+    A swipe turns the page. The page is not animated off the screen: the canvas keeps showing
+    the old page until the new one is ready, so sliding it away would slide the wrong page out
+    and then snap. Instead it is dimmed, but only if the new page is not already drawn — with
+    the neighbours pre-rendered most turns are immediate and need no feedback at all.
   */
   const onSwipe = useCallback(
     (dir: 1 | -1) => {
-      setTurning(true);
+      /*
+        Dim the page only if the turn is slow enough to need it. A neighbouring page is
+        normally already drawn and appears in a few milliseconds, and dimming for that long
+        reads as a flicker rather than as feedback. If the page has to be rasterised the dim
+        appears on time and stays until it is ready.
+      */
+      if (dimRef.current !== null) clearTimeout(dimRef.current);
+      dimRef.current = window.setTimeout(() => {
+        dimRef.current = null;
+        setTurning(true);
+      }, DIM_AFTER_MS);
       onActivity();
       setPageNum((p) => Math.min(Math.max(1, p + dir), Math.max(1, pageCount)));
     },
@@ -332,20 +518,37 @@ export function PdfViewer({
   );
 
   /** Applies an absolute scale, leaving whichever fit mode was active. */
-  const applyScale = useCallback((next: number) => {
-    setScale(Math.max(MIN_SCALE, Math.min(MAX_SCALE, next)));
-    setFit('custom');
-  }, []);
+  const applyScale = useCallback(
+    (next: number, anchor?: { u: number; v: number; x: number; y: number }) => {
+      if (anchor) anchorRef.current = anchor;
+      setScale(Math.max(MIN_SCALE, Math.min(MAX_SCALE, next)));
+      setFit('custom');
+    },
+    []
+  );
+
+  /** A pinch or a ctrl+wheel, centred on the point it was made about. */
+  const onZoomCommit = useCallback(
+    (z: { scale: number; u: number; v: number; x: number; y: number }) => {
+      applyScale(z.scale, { u: z.u, v: z.v, x: z.x, y: z.y });
+      onActivity();
+    },
+    [applyScale, onActivity]
+  );
 
   const zoom = (factor: number) => applyScale(renderedScale.current * factor);
 
   const currentScale = useCallback(() => renderedScale.current, []);
 
   /** Double-tap alternates between the whole page and a comfortable reading magnification. */
-  const onDoubleTap = useCallback(() => {
-    if (fit === 'custom' && renderedScale.current > 1.05) setFit('page');
-    else applyScale(2);
-  }, [fit, applyScale]);
+  const onDoubleTap = useCallback(
+    (at: { u: number; v: number; x: number; y: number }) => {
+      if (fit === 'custom' && renderedScale.current > 1.05) setFit('page');
+      // Zoom towards what was tapped rather than towards the middle of the page.
+      else applyScale(2, at);
+    },
+    [fit, applyScale]
+  );
 
   useZoomPan({
     stageRef,
@@ -353,8 +556,10 @@ export function PdfViewer({
     canTurn,
     onSwipe,
     currentScale,
-    onScale: applyScale,
+    onZoomCommit,
     onDoubleTap,
+    minScale: MIN_SCALE,
+    maxScale: MAX_SCALE,
     onActivity,
     enabled: !loading && !error,
   });

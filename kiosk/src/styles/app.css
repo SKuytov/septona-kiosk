@@ -455,15 +455,24 @@ mark { background: #fde68a; color: var(--sep-ink); border-radius: 3px; padding: 
 }
 .vw__s { font-size: 0.78rem; color: var(--sep-blue-light); margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
+/*
+  The page is centred with padding, not with flex centring.
+
+  A centred flex item that grows larger than its scroll container overflows both sides, and
+  the half that overflows the start edge sits at a negative offset. scrollLeft cannot go
+  below zero, so that half simply could not be reached: zoomed in on a 713px stage, 297px
+  down the left of the page was unreachable. Padding puts the same space in the scrollable
+  area instead, so the page is centred when it fits and fully reachable when it does not.
+  The padding is computed after each render in PdfViewer.
+*/
 .vw__stage {
   flex: 1 1 auto;
   overflow: auto;
-  display: flex;
-  align-items: flex-start;
-  justify-content: center;
+  display: block;
   padding: 22px;
   -webkit-overflow-scrolling: touch;
 }
+.vw__canvas { display: block; }
 .vw__canvas {
   background: #fff;
   box-shadow: 0 8px 40px rgba(0, 0, 0, 0.45);
@@ -904,7 +913,7 @@ mark { background: #fde68a; color: var(--sep-ink); border-radius: 3px; padding: 
    panel showing an A4 sheet -- that left a large empty band underneath it. An auto
    margin centres the page when it fits and still allows scrolling when it does not,
    which `align-items: center` on its own would not. */
-.vw__canvas { margin: auto; }
+/* Centring lives in the stage's padding — see .vw__stage. */
 
 /* A swipe dims the page slightly until the next one has been drawn. The page itself is not
    animated off the screen: the new page is rendered off-screen and copied across when it is

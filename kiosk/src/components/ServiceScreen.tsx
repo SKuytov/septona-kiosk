@@ -3,9 +3,14 @@
  * the service PIN — so a passer-by cannot reconfigure the display, but an engineer
  * needs no keyboard shortcuts or adb.
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useState, lazy, Suspense } from 'react';
 import { Icon } from './Icon';
-import { Diagnostics } from './Diagnostics';
+/*
+  Loaded on demand. Diagnostics reports the PDF engine's build, which means it references the
+  engine — and because this module also exports the PIN pad shown on the browse screen, that
+  reference alone kept the whole engine in the initial bundle and delayed every start.
+*/
+const Diagnostics = lazy(() => import('./Diagnostics').then((m) => ({ default: m.Diagnostics })));
 import { t, formatBytes, formatDate } from '../lib/i18n';
 import { APP_VERSION, getConnection, setConnection, testConnection } from '../lib/sync';
 import { cacheStats, clearFiles, requestPersistence } from '../lib/store';
@@ -239,7 +244,9 @@ export function ServiceScreen({ lang, sync, onSyncNow, onClose }: Props) {
             )}
           </div>
 
-          <Diagnostics />
+          <Suspense fallback={<p className="svc__hint">{t(lang, 'loading')}</p>}>
+            <Diagnostics />
+          </Suspense>
 
           <div className="panel">
             <h2 className="panel__t">Указания за монтаж</h2>

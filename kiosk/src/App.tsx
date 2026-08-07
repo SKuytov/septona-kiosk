@@ -1,9 +1,21 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, lazy, Suspense } from 'react';
 import logo from './assets/septona-logo.jpg';
 import { Icon } from './components/Icon';
 import { DocCard } from './components/DocCard';
 import { SearchOverlay } from './components/SearchOverlay';
-import { PdfViewer } from './components/PdfViewer';
+/*
+  The viewer, and with it the PDF engine, is fetched separately from the rest of the app.
+
+  The engine is by far the largest thing in the build, and while it was part of the main
+  bundle the panel could not show anything at all until it had been downloaded, parsed and
+  evaluated — which is paid for on every restart, and this panel restarts often. It is now
+  fetched as soon as the list is up and the panel is idle, so the list appears sooner and a
+  document still opens immediately.
+*/
+/** Long enough for the list to be painted first, short enough to be ready before a tap. */
+const VIEWER_WARM_MS = 700;
+const loadViewer = () => import('./components/PdfViewer');
+const PdfViewer = lazy(() => loadViewer().then((m) => ({ default: m.PdfViewer })));
 import { PinPad, ServiceScreen } from './components/ServiceScreen';
 import { t, plural, formatDate } from './lib/i18n';
 import { catName, matchesLang, DEFAULT_SETTINGS } from './lib/types';
@@ -120,6 +132,16 @@ export default function App() {
   // Declared before every effect that lists it as a dependency: a dependency array
   // is evaluated during render, so a later `const` would be in the temporal dead
   // zone and throw "Cannot access 'noteActivity' before initialization".
+  /*
+    Fetch the viewer chunk once the list is on screen. Waiting for the reader to tap a
+    document would make the first open wait for a 400KB download and parse; doing it here
+    means the list appears without it and the document is ready by the time anyone asks.
+  */
+  useEffect(() => {
+    const id = window.setTimeout(() => void loadViewer().catch(() => {}), VIEWER_WARM_MS);
+    return () => clearTimeout(id);
+  }, []);
+
   const noteActivity = useCallback(() => {
     lastTouch.current = Date.now();
     setCycling(false);
@@ -285,16 +307,16 @@ export default function App() {
   if (screen === 'service') {
     return (
       <ServiceScreen
-        lang={lang}
-        sync={syncState}
-        onSyncNow={() => void doSync()}
-        onClose={() => {
-          setScreen('browse');
-          void (async () => {
-            const conn = await getConnection();
-            setConfigured(!!(conn?.baseUrl && conn?.deviceKey));
-          })();
-        }}
+          lang={lang}
+          sync={syncState}
+          onSyncNow={() => void doSync()}
+          onClose={() => {
+            setScreen('browse');
+            void (async () => {
+              const conn = await getConnection();
+              setConfigured(!!(conn?.baseUrl && conn?.deviceKey));
+            })();
+          }}
       />
     );
   }
@@ -540,6 +562,7 @@ export default function App() {
         */}
         {splitOpen && (
           <section className="split__pane">
+            <Suspense fallback={<div className="vw__loading">{t(lang, 'loading')}</div>}>
             <PdfViewer
               doc={openDoc}
               lang={lang}
@@ -551,6 +574,7 @@ export default function App() {
               onClose={() => { setOpenDoc(null); noteActivity(); }}
               onActivity={noteActivity}
             />
+            </Suspense>
           </section>
         )}
       </main>
@@ -572,6 +596,7 @@ export default function App() {
         both halves too small to use. Full screen still applies — it drops the toolbars.
       */}
       {openDoc && !split && (
+        <Suspense fallback={<div className="vw vw--overlay"><div className="vw__loading">{t(lang, 'loading')}</div></div>}>
         <PdfViewer
           doc={openDoc}
           lang={lang}
@@ -581,6 +606,7 @@ export default function App() {
           onClose={() => { setOpenDoc(null); noteActivity(); }}
           onActivity={noteActivity}
         />
+        </Suspense>
       )}
 
       {pinOpen && (

@@ -50,10 +50,19 @@ interface Options {
   stageRef: React.RefObject<HTMLElement | null>;
   /** The scale currently on screen, whatever fit mode produced it. */
   currentScale: () => number;
-  /** Apply a new absolute scale. The caller clamps and switches to a custom fit mode. */
-  onScale: (scale: number) => void;
-  /** Double-tap: the caller decides what to toggle between. */
-  onDoubleTap: () => void;
+  /**
+   * A finished zoom. `scale` is absolute; the caller clamps it and leaves its fit mode.
+   * `u`/`v` are the point of the page the gesture was centred on, as a 0..1 fraction of the
+   * page, and `x`/`y` are where on the screen that point should end up. The caller uses them
+   * to keep what was under the fingers under the fingers, instead of jumping to the middle
+   * of the page on every zoom.
+   */
+  onZoomCommit: (z: { scale: number; u: number; v: number; x: number; y: number }) => void;
+  /** Double-tap, with the point tapped so the caller can zoom towards it. */
+  onDoubleTap: (at: { u: number; v: number; x: number; y: number }) => void;
+  /** Limits, so the live preview cannot be pinched past what the caller would allow. */
+  minScale: number;
+  maxScale: number;
   /** Any interaction, so the idle timer that resumes cycling is held off. */
   onActivity: () => void;
   /** The page element, moved with the finger during a swipe. */
@@ -70,8 +79,10 @@ export function useZoomPan({
   stageRef,
   pageRef,
   currentScale,
-  onScale,
+  onZoomCommit,
   onDoubleTap,
+  minScale,
+  maxScale,
   onActivity,
   canTurn,
   onSwipe,
@@ -79,7 +90,19 @@ export function useZoomPan({
 }: Options): void {
   /** Live pointers by id, so a second finger is recognised as a pinch. */
   const pointers = useRef(new Map<number, { x: number; y: number }>());
-  const pinch = useRef<{ dist: number; scale: number } | null>(null);
+  const pinch = useRef<{
+    dist: number;
+    scale: number;
+    /** The focal point as a fraction of the page, frozen when the second finger lands. */
+    u: number;
+    v: number;
+    midX: number;
+    midY: number;
+    /** Where the fingers are now, so the page can be dragged while being pinched. */
+    nowX: number;
+    nowY: number;
+    k: number;
+  } | null>(null);
   const pan = useRef<{ x: number; y: number; left: number; top: number } | null>(null);
   const moved = useRef(0);
   const lastTap = useRef(0);
@@ -109,6 +132,26 @@ export function useZoomPan({
     }
   }, []);
 
+  /** A screen point expressed as a fraction of the page, for anchoring a zoom. */
+  const onPage = useCallback(
+    (x: number, y: number) => {
+      const el = pageRef.current;
+      const r = el?.getBoundingClientRect();
+      if (!r || !r.width || !r.height) return { u: 0.5, v: 0.5 };
+      return {
+        u: Math.min(1, Math.max(0, (x - r.left) / r.width)),
+        v: Math.min(1, Math.max(0, (y - r.top) / r.height)),
+      };
+    },
+    [pageRef]
+  );
+
+  const midpoint = () => {
+    const [a, b] = [...pointers.current.values()];
+    if (!a || !b) return { x: 0, y: 0 };
+    return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+  };
+
   const spread = () => {
     const [a, b] = [...pointers.current.values()];
     if (!a || !b) return 0;
@@ -125,8 +168,35 @@ export function useZoomPan({
       onActivity();
 
       if (pointers.current.size === 2) {
-        // Second finger down: freeze the scale this pinch is measured against.
-        pinch.current = { dist: spread(), scale: currentScale() };
+        /*
+          Second finger down. The scale the pinch is measured against is frozen here, and so
+          is the point of the page between the fingers: everything after this is previewed
+          with a CSS transform about that point and only committed to a real render when the
+          fingers lift. Re-rendering the PDF on every move meant pdf.js work at touch rate,
+          which the panel's WebView cannot keep up with, so the pinch stuttered badly.
+        */
+        const mid = midpoint();
+        const { u, v } = onPage(mid.x, mid.y);
+        const el = pageRef.current;
+        const r = el?.getBoundingClientRect();
+        if (el && r) el.style.transformOrigin = `${u * r.width}px ${v * r.height}px`;
+        pinch.current = {
+          dist: spread(),
+          scale: currentScale(),
+          u,
+          v,
+          midX: mid.x,
+          midY: mid.y,
+          nowX: mid.x,
+          nowY: mid.y,
+          k: 1,
+        };
+        mode.current = null;
+        swipeDx.current = 0;
+        if (el) {
+          el.style.transition = 'none';
+          el.style.transform = '';
+        }
         pan.current = null;
       } else if (pointers.current.size === 1) {
         moved.current = 0;
@@ -142,11 +212,24 @@ export function useZoomPan({
       const previous = pointers.current.get(e.pointerId)!;
       pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
-      // ---- pinch ----
-      if (pointers.current.size >= 2 && pinch.current) {
+      // ---- pinch: preview with a transform, commit on release ----
+      const p = pinch.current;
+      if (pointers.current.size >= 2 && p) {
         const now = spread();
-        if (pinch.current.dist > 0 && now > 0) {
-          onScale(pinch.current.scale * (now / pinch.current.dist));
+        const el = pageRef.current;
+        if (p.dist > 0 && now > 0 && el) {
+          // Clamp the preview to the same limits the caller enforces, so the page cannot be
+          // stretched to a size that then snaps back when the fingers lift.
+          const lo = minScale / p.scale;
+          const hi = maxScale / p.scale;
+          p.k = Math.min(hi, Math.max(lo, now / p.dist));
+          const mid = midpoint();
+          p.nowX = mid.x;
+          p.nowY = mid.y;
+          const dx = mid.x - p.midX;
+          const dy = mid.y - p.midY;
+          el.style.transition = 'none';
+          el.style.transform = `translate(${dx}px, ${dy}px) scale(${p.k})`;
         }
         return;
       }
@@ -205,10 +288,33 @@ export function useZoomPan({
     const onUp = (e: PointerEvent) => {
       const wasSingle = pointers.current.size === 1;
       pointers.current.delete(e.pointerId);
-      if (pointers.current.size < 2) pinch.current = null;
+      let finished: typeof pinch.current = null;
+      if (pointers.current.size < 2) {
+        finished = pinch.current;
+        pinch.current = null;
+      }
 
       if (!wasSingle) {
-        // Coming out of a pinch: rebase panning on whichever finger is still down.
+        // Coming out of a pinch: turn the previewed transform into a real render, asking for
+        // the focal point to stay where the fingers left it.
+        if (finished) {
+          const el = pageRef.current;
+          if (el) {
+            el.style.transition = 'none';
+            el.style.transform = '';
+            el.style.transformOrigin = '';
+          }
+          if (Math.abs(finished.k - 1) > 0.005) {
+            onZoomCommit({
+              scale: finished.scale * finished.k,
+              u: finished.u,
+              v: finished.v,
+              x: finished.nowX,
+              y: finished.nowY,
+            });
+          }
+        }
+        // Rebase panning on whichever finger is still down.
         const rest = [...pointers.current.values()][0];
         pan.current = rest
           ? { x: rest.x, y: rest.y, left: stage.scrollLeft, top: stage.scrollTop }
@@ -238,7 +344,8 @@ export function useZoomPan({
         const now = e.timeStamp;
         if (now - lastTap.current < DOUBLE_TAP_MS) {
           lastTap.current = 0;
-          onDoubleTap();
+          const { u, v } = onPage(e.clientX, e.clientY);
+          onDoubleTap({ u, v, x: e.clientX, y: e.clientY });
         } else {
           lastTap.current = now;
         }
@@ -264,7 +371,14 @@ export function useZoomPan({
     const onWheel = (e: WheelEvent) => {
       if (!e.ctrlKey) return;
       e.preventDefault();
-      onScale(currentScale() * (e.deltaY < 0 ? 1.12 : 1 / 1.12));
+      const { u, v } = onPage(e.clientX, e.clientY);
+      onZoomCommit({
+        scale: currentScale() * (e.deltaY < 0 ? 1.12 : 1 / 1.12),
+        u,
+        v,
+        x: e.clientX,
+        y: e.clientY,
+      });
       onActivity();
     };
 
@@ -287,15 +401,20 @@ export function useZoomPan({
       mode.current = null;
       swipeDx.current = 0;
       dragPage(0, false);
+      if (pageRef.current) pageRef.current.style.transformOrigin = '';
     };
   }, [
     stageRef,
     enabled,
     currentScale,
-    onScale,
+    onZoomCommit,
     onDoubleTap,
     onActivity,
     stopGlide,
+    onPage,
+    pageRef,
+    minScale,
+    maxScale,
     canTurn,
     onSwipe,
     dragPage,
