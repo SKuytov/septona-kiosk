@@ -1,12 +1,14 @@
 /*
- * Can the reader pick a different document from the list while one is already open?
+ * Can the reader read several documents from one category without being thrown back to the
+ * start each time?
  *
- * The split reading view narrows the list into a column beside the page. The full-document
- * sweep stalled part-way through a category once that view existed, which is either a
- * problem with the sweep's assumptions or a real one: if a card in the narrow column can
- * no longer be tapped, the left-hand list is decoration rather than navigation.
+ * The split reading view this originally guarded is gone: as of v1.0.6 the document covers
+ * the screen and "Назад" returns to the list. That makes a new thing worth checking, and it
+ * is the thing a reader on a 21-document category will notice first — whether the list is
+ * still where they left it, scrolled to the card they just read, or scrolled back to the
+ * top so they have to hunt for their place again.
  *
- * Every step here has a short explicit timeout so a stall is reported as a stall instead of
+ * Every step has a short explicit timeout so a stall is reported as a stall instead of
  * hanging, and a screenshot is written whenever a step fails.
  */
 const { chromium } = require('playwright');
@@ -42,13 +44,29 @@ async function main() {
   page.on('pageerror', (e) => errors.push(String(e)));
 
   await page.goto(BASE, { waitUntil: 'domcontentloaded' });
-  await page.waitForSelector('.card', { timeout: 30000 });
+  await page.waitForSelector('.tab', { timeout: 30000 });
 
   // Politiki is the big category and the one the sweep stalled in.
   await page.locator('.tab', { hasText: 'Политики' }).first().click();
+  await page.waitForSelector('.card', { timeout: 30000 });
   await page.waitForTimeout(800);
   const total = await page.locator('.card').count();
   ok('the category lists its documents', total >= 20, `${total} cards`);
+
+  /** Leaves the document the way a reader does, and waits for the overlay to really go. */
+  async function backToList() {
+    if (!(await page.locator('.vw').count())) return;
+    await page.locator('.vbtn--back').first().click({ timeout: 10000 });
+    await page.waitForSelector('.vw', { state: 'detached', timeout: 15000 });
+    await page.waitForSelector('.card', { timeout: 15000 });
+    await page.waitForTimeout(150);
+  }
+
+  const listScroll = () =>
+    page.evaluate(() => {
+      const el = document.querySelector('.scroll');
+      return el ? Math.round(el.scrollTop) : -1;
+    });
 
   async function openByIndex(i) {
     const t0 = Date.now();
@@ -84,12 +102,19 @@ async function main() {
   let r = await openByIndex(0);
   console.log(`  [${stamp()}] 1st: ${r.title} -> ${r.verdict} (${r.ms}ms)`);
   ok('the first document opens from the board', r.verdict === 'ok', r.verdict);
-  ok('the split view engaged', (await page.locator('.main--split').count()) === 1);
+  ok('and it covers the screen', (await page.locator('.vw--overlay').count()) === 1);
+  ok('the split view is gone for good', (await page.locator('.main--split').count()) === 0);
 
-  // Now the interesting part: every later document is picked from the narrow column while
-  // the previous one is still on screen. Index 4 is where the sweep stalled.
+  // Now the interesting part: back out and pick the next one, over and over, the way
+  // someone working through a category does. Index 4 is where the sweep once stalled.
   for (const i of [1, 2, 3, 4, 5, 9, 14, 20]) {
     if (i >= total) continue;
+    await backToList();
+    // Scroll the wanted card into view first, then remember where the list was left, so the
+    // check below is about the list keeping its place rather than about a short list.
+    await page.locator('.card').nth(i).scrollIntoViewIfNeeded();
+    await page.waitForTimeout(200);
+    const before = await listScroll();
     let res;
     try {
       res = await openByIndex(i);
@@ -100,8 +125,15 @@ async function main() {
     if (res.verdict !== 'ok') {
       await page.screenshot({ path: `${SHOTS}/switch-fail-${i}.png` }).catch(() => {});
     }
-    ok(`document #${i} opens from the list while reading`, res.verdict === 'ok', res.verdict);
-    ok(`document #${i} became the selected card`, (await page.locator('.card--on').count()) === 1);
+    ok(`document #${i} opens after backing out of the previous one`, res.verdict === 'ok', res.verdict);
+    await backToList();
+    const after = await listScroll();
+    ok(
+      `the list is still where it was left after reading #${i}`,
+      before <= 4 || Math.abs(after - before) <= 8,
+      `scrollTop ${before} -> ${after}`
+    );
+    ok(`document #${i} is still marked as the one just read`, (await page.locator('.card--on').count()) === 1);
   }
 
   ok('no uncaught script errors', errors.length === 0, errors.slice(0, 2).join(' | '));

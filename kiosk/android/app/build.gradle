@@ -15,8 +15,8 @@ android {
         applicationId "bg.septona.kiosk"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 6
-        versionName "1.0.5"
+        versionCode 7
+        versionName "1.0.6"
         // Orientation of the kiosk activity. android:screenOrientation is an *enum*
         // attribute, so it cannot reference a string resource -- doing so makes the
         // platform package parser reject the APK outright ("problem parsing the

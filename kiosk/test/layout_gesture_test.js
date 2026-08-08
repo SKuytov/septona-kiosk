@@ -5,9 +5,10 @@
  *   1. press-and-hold on the logo opens the service PIN pad, using genuine touch events
  *      dispatched through CDP rather than synthetic clicks
  *   2. the five-tap fallback opens it too
- *   3. wide screens show the list and the document side by side, narrow ones do not
- *      and the pane really is the larger half
- *   4. the list collapses and full screen covers the whole viewport
+ *   3. a document covers the whole panel at every size — the side-by-side layout was
+ *      dropped in v1.0.6, because on a portrait wall panel it gave the page a third of the
+ *      screen and a wall panel is read from two metres away
+ *   4. full screen covers the whole viewport
  *   5. pinch and double-tap change the rendered page size
  *   6. nothing overflows its container at any of the three sizes
  *
@@ -35,8 +36,6 @@ const SIZES = {
   kiosk: { width: 1080, height: 1920 },
 };
 
-/** Must agree with SPLIT_QUERY in kiosk/src/lib/useMediaQuery.ts. */
-const SPLIT_AT = 760;
 
 let pass = 0;
 let fail = 0;
@@ -68,7 +67,16 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 /** Waits until the board is up and the bundled documents have finished importing. */
 async function boot(page) {
   await page.goto(BASE, { waitUntil: 'domcontentloaded' });
-  await page.waitForSelector('.card', { timeout: 60000 });
+  // The panel rests on the home screen, so the categories are what tells us it is up.
+  await page.waitForSelector('.tab', { timeout: 60000 });
+  await page.waitForTimeout(400);
+}
+
+/** Opens a category so there are documents on screen. */
+async function showDocs(page, name = 'Планове евакуация') {
+  if (await page.locator('.card').count()) return;
+  await page.locator('.tab', { hasText: name }).first().click();
+  await page.waitForSelector('.card', { timeout: 30000 });
 }
 
 async function newPage(browser, size) {
@@ -223,12 +231,17 @@ async function overflows(page) {
 
   // ---------------------------------------------------------------- 3. layout per size
   for (const [name, size] of Object.entries(SIZES)) {
-    const wide = size.width >= SPLIT_AT;
-    console.log(`\n[3] ${name} ${size.width}x${size.height} — expecting ${wide ? 'split' : 'overlay'}`);
+    console.log(`\n[3] ${name} ${size.width}x${size.height}`);
     const { ctx, page, errors } = await newPage(browser, size);
     await boot(page);
 
+    // The home screen, before anything has been touched.
     let bad = await overflows(page);
+    ok('the home screen has no overflow', bad.length === 0, bad.join(' | '));
+    await page.screenshot({ path: `${SHOTS}/103-${name}-home.png` });
+
+    await showDocs(page);
+    bad = await overflows(page);
     ok('board has no overflow', bad.length === 0, bad.join(' | '));
     await page.screenshot({ path: `${SHOTS}/103-${name}-board.png` });
 
@@ -252,34 +265,16 @@ async function overflows(page) {
         pane_variant: q('.vw--pane') ? 'pane' : q('.vw--overlay') ? 'overlay' : '?',
         canvasW: q('.vw__canvas')?.getBoundingClientRect().width || 0,
         win: { w: window.innerWidth, h: window.innerHeight },
-        selected: document.querySelectorAll('.card--on').length,
       };
     });
 
-    ok(`viewer variant is ${wide ? 'pane' : 'overlay'}`, geom.pane_variant === (wide ? 'pane' : 'overlay'), geom.pane_variant);
-    ok('split container matches the width', geom.split === wide);
-
-    if (wide) {
-      ok('list and document are both on screen', !!geom.board && !!geom.pane);
-      ok(
-        'list is on the left of the document',
-        geom.board.x + geom.board.width <= geom.pane.x + 2,
-        `list ends ${Math.round(geom.board.x + geom.board.width)}, pane starts ${Math.round(geom.pane.x)}`
-      );
-      ok(
-        'document gets the larger share',
-        geom.pane.width > geom.board.width,
-        `${Math.round(geom.pane.width)}px vs ${Math.round(geom.board.width)}px list`
-      );
-      ok(
-        'document pane uses at least 60% of the width',
-        geom.pane.width / geom.win.w >= 0.6,
-        `${Math.round((geom.pane.width / geom.win.w) * 100)}%`
-      );
-      ok('the open document is marked in the list', geom.selected === 1, `${geom.selected} highlighted`);
-    } else {
-      ok('viewer covers the screen', Math.abs(geom.vw.width - geom.win.w) < 2 && Math.abs(geom.vw.height - geom.win.h) < 2);
-    }
+    ok('the viewer is the full-screen one at every size', geom.pane_variant === 'overlay', geom.pane_variant);
+    ok('there is no side-by-side layout left', !geom.split && !geom.pane);
+    ok(
+      'the document covers the screen',
+      Math.abs(geom.vw.width - geom.win.w) < 2 && Math.abs(geom.vw.height - geom.win.h) < 2,
+      `${Math.round(geom.vw.width)}x${Math.round(geom.vw.height)} of ${geom.win.w}x${geom.win.h}`
+    );
 
     bad = await overflows(page);
     ok('viewer has no overflow', bad.length === 0, bad.join(' | '));
@@ -300,8 +295,7 @@ async function overflows(page) {
     await page.screenshot({ path: `${SHOTS}/103-${name}-doc.png` });
 
     // ---- full screen
-    const fsBtn = page.locator(`.vw__bar .vbtn[aria-label]`).filter({ has: page.locator('svg') });
-    await page.locator('.vw__bar .vbtn').nth(wide ? 1 : 1).click();
+    await page.locator('.vw__bar .vbtn').nth(1).click();
     await page.waitForTimeout(500);
     const fs = await page.evaluate(() => {
       const el = document.querySelector('.vw--full');
@@ -320,31 +314,6 @@ async function overflows(page) {
     await page.locator('.vw__bar .vbtn').nth(1).click();
     await page.waitForTimeout(400);
     ok('full screen can be left', (await page.locator('.vw--full').count()) === 0);
-
-    // ---- collapsing the list (wide only)
-    if (wide) {
-      await page.locator('.vw__bar .vbtn').first().click();
-      await page.waitForTimeout(600);
-      const collapsed = await page.evaluate(() => {
-        const b = document.querySelector('.board');
-        const p = document.querySelector('.split__pane');
-        return {
-          boardVisible: !!b && b.getBoundingClientRect().width > 0,
-          paneW: p ? p.getBoundingClientRect().width : 0,
-          win: window.innerWidth,
-          canvasW: document.querySelector('.vw__canvas')?.getBoundingClientRect().width || 0,
-        };
-      });
-      ok('the list hides', collapsed.boardVisible === false);
-      ok('the document takes the full width', Math.abs(collapsed.paneW - collapsed.win) < 2,
-        `${Math.round(collapsed.paneW)} of ${collapsed.win}`);
-      ok('the page re-renders wider when the list hides', collapsed.canvasW > geom.canvasW,
-        `${Math.round(collapsed.canvasW)}px vs ${Math.round(geom.canvasW)}px before`);
-      await page.screenshot({ path: `${SHOTS}/103-${name}-nolist.png` });
-      await page.locator('.vw__bar .vbtn').first().click();
-      await page.waitForTimeout(500);
-      ok('the list comes back', (await page.locator('.board').boundingBox()).width > 0);
-    }
 
     // ---- zoom: buttons, double tap, pinch
     const cdp = await ctx.newCDPSession(page);
@@ -441,6 +410,7 @@ async function overflows(page) {
       // Nothing: init scripts run too early for the module graph. Handled below instead.
     });
     // Force the failure path by corrupting the render call after load.
+    await showDocs(page);
     await page.locator('.card').first().click();
     await page.waitForSelector('.vw__canvas', { timeout: 30000 });
     const hint = await page.locator('.vw__errh').count();

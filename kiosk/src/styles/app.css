@@ -465,11 +465,22 @@ mark { background: #fde68a; color: var(--sep-ink); border-radius: 3px; padding: 
   area instead, so the page is centred when it fits and fully reachable when it does not.
   The padding is computed after each render in PdfViewer.
 */
+/* The stage scrolls, so the turning sheets cannot live inside it — they would scroll with
+   the page. This wrapper is the fixed box they are laid over and clipped to. */
+.vw__stagewrap {
+  flex: 1 1 auto;
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  min-height: 0;
+}
+
 .vw__stage {
   flex: 1 1 auto;
   overflow: auto;
   display: block;
   padding: 22px;
+  min-height: 0;
   -webkit-overflow-scrolling: touch;
 }
 .vw__canvas { display: block; }
@@ -737,6 +748,8 @@ mark { background: #fde68a; color: var(--sep-ink); border-radius: 3px; padding: 
   height: 100%;
   min-height: 0;
   overflow: hidden;
+  /* The home screen is absolutely positioned inside this pane. */
+  position: relative;
 }
 
 .main--split {
@@ -993,7 +1006,10 @@ mark { background: #fde68a; color: var(--sep-ink); border-radius: 3px; padding: 
   }
   .rail__spacer { display: none; }
   .tab { height: 44px; padding: 0 12px; font-size: 0.9rem; }
-  .cyc { flex: 1 1 100%; justify-content: center; }
+  /* This used to be the auto-cycle control, which was worth a full row of its own. It is
+     now just the way back to the home screen, and a bar across the whole rail overstated
+     it — it sits at its natural width beside the categories instead. */
+  .cyc { flex: 0 0 auto; }
 }
 
 /* ---- toolbars in the reading pane
@@ -1006,3 +1022,308 @@ mark { background: #fde68a; color: var(--sep-ink); border-radius: 3px; padding: 
   .vw--pane .vw__foot .vbtn__lbl { display: none; }
   .vw--pane .vw__pg { min-width: 0; }
 }
+
+
+/* ============================================================ page turn
+   Two flat snapshots of the stage, stacked, one of which follows the finger. Which one
+   moves depends on the direction, because the next page lies under the page being read
+   and the previous one lies over it — the reasoning is in src/lib/pageTurn.ts.
+
+   These sheets are only on screen during a turn. `visibility` rather than `display` so the
+   canvases keep their backing store between gestures and the first frame of a turn is never
+   spent allocating memory. */
+.turn {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  overflow: hidden;
+  pointer-events: none;
+  visibility: hidden;
+}
+.turn--on { visibility: visible; }
+
+.turn__sheet {
+  position: absolute;
+  inset: 0;
+  transform: translate3d(0, 0, 0);
+  will-change: transform;
+  backface-visibility: hidden;
+}
+.turn__sheet canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.turn__sheet--under { z-index: 1; }
+
+/* The moving sheet floats above what it covers. The shadow is on the element rather than
+   drawn into the canvas so it costs nothing per frame, and it deepens as the sheet lifts. */
+.turn__sheet--over {
+  z-index: 2;
+  --turn-lift: 0;
+  box-shadow:
+    0 0 calc(18px + 26px * var(--turn-lift)) rgba(0, 0, 0, calc(0.28 + 0.34 * var(--turn-lift))),
+    0 0 0 1px rgba(0, 0, 0, 0.18);
+}
+
+/* A covered sheet is in shade until the one above it moves clear. */
+.turn__shade {
+  position: absolute;
+  inset: 0;
+  background: #000;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* The turn is the one animation on the panel that must survive a reduced-motion setting: it
+   is not decoration, it is the feedback that tells the reader the page moved with the finger.
+   It is shortened rather than removed. */
+@media (prefers-reduced-motion: reduce) {
+  .turn__sheet--over { box-shadow: none; }
+}
+
+
+/* ============================================================ home screen
+   What the panel shows when nobody is using it. It occupies the same pane the document
+   list does, so touching a category swaps this out for the list without the header or the
+   category buttons moving — see src/components/HomeScreen.tsx.
+
+   Nothing here is fast. A wall panel that animates briskly reads as an advertisement; the
+   intent is that it looks like it is simply on. */
+.home {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background: var(--sep-navy-deep, #1b2461);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Both photographs are always laid down and one is faded over the other. Swapping a single
+   element's background instead would decode the new image at the moment it is needed and
+   show a blank frame while it did. */
+.home__bg {
+  position: absolute;
+  inset: 0;
+  background-size: cover;
+  background-position: center;
+  opacity: 0;
+  transition: opacity 2400ms ease-in-out;
+  /* A very slow drift, so a still photograph on a panel does not look like a frozen app. */
+  animation: homeDrift 46s ease-in-out infinite alternate;
+  will-change: opacity, transform;
+}
+.home__bg--on { opacity: 1; }
+
+@keyframes homeDrift {
+  from { transform: scale(1.04) translate3d(0, 0, 0); }
+  to   { transform: scale(1.11) translate3d(0, -1.6%, 0); }
+}
+
+/* Brand wash over the photograph. The mark and the wording have to stay legible over both
+   images, and a photograph of white cotton will not carry white text on its own. */
+.home__wash {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(120% 78% at 50% 42%, rgba(20, 28, 78, 0.24) 0%, rgba(16, 23, 66, 0.72) 62%, rgba(11, 16, 48, 0.9) 100%),
+    linear-gradient(180deg, rgba(38, 48, 122, 0.5) 0%, rgba(23, 31, 84, 0.34) 40%, rgba(15, 21, 60, 0.78) 100%);
+}
+
+.home__motes { position: absolute; inset: 0; overflow: hidden; }
+.home__mote {
+  position: absolute;
+  bottom: -12%;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 35%, rgba(255, 255, 255, 0.95), rgba(180, 214, 245, 0.15));
+  animation-name: homeFloat;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+  will-change: transform, opacity;
+}
+
+@keyframes homeFloat {
+  0%   { transform: translate3d(0, 0, 0); opacity: 0; }
+  12%  { opacity: 1; }
+  88%  { opacity: 1; }
+  100% { transform: translate3d(var(--drift, 0), -118vh, 0); opacity: 0; }
+}
+
+.home__centre {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 24px 32px;
+  animation: riseIn 0.7s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* The mark is navy on transparent, which disappears against a navy wash. The glow is what
+   lifts it off the photograph, and it breathes slowly so the panel is never completely
+   still — a completely still screen is indistinguishable from a crashed one at a distance. */
+.home__logo {
+  width: min(52vw, 340px);
+  height: auto;
+  background: rgba(255, 255, 255, 0.94);
+  border-radius: 22px;
+  padding: 20px 26px;
+  box-shadow: 0 26px 70px rgba(0, 0, 0, 0.42);
+  animation: homePulse 7s ease-in-out infinite;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+@keyframes homePulse {
+  0%, 100% { box-shadow: 0 26px 70px rgba(0, 0, 0, 0.42), 0 0 0 rgba(255, 255, 255, 0); }
+  50%      { box-shadow: 0 26px 70px rgba(0, 0, 0, 0.42), 0 0 46px rgba(255, 255, 255, 0.34); }
+}
+
+.home__ttl {
+  margin-top: 34px;
+  color: #fff;
+  font-size: clamp(1.5rem, 3.4vw, 2.3rem);
+  font-weight: 700;
+  letter-spacing: -0.015em;
+  text-shadow: 0 2px 18px rgba(0, 0, 0, 0.5);
+}
+
+.home__hint {
+  margin-top: 12px;
+  color: rgba(255, 255, 255, 0.86);
+  font-size: clamp(0.98rem, 1.7vw, 1.18rem);
+  font-weight: 500;
+  text-shadow: 0 2px 14px rgba(0, 0, 0, 0.55);
+  max-width: 30ch;
+  line-height: 1.5;
+}
+
+/* Points back up at the category buttons, which are the only thing to touch. */
+.home__cue {
+  margin-top: 30px;
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 22px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.14);
+  border: 1px solid rgba(255, 255, 255, 0.26);
+  color: #fff;
+  font-size: 0.98rem;
+  font-weight: 600;
+  animation: homeNudge 3.2s ease-in-out infinite;
+}
+.home__arrow {
+  width: 0; height: 0;
+  border-left: 7px solid transparent;
+  border-right: 7px solid transparent;
+  border-bottom: 10px solid #fff;
+}
+
+@keyframes homeNudge {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-7px); }
+}
+
+/* The home screen is decoration, so unlike the page turn it goes away entirely for anyone
+   who has asked for less movement. */
+@media (prefers-reduced-motion: reduce) {
+  .home__bg { animation: none; transition: opacity 600ms linear; }
+  .home__motes { display: none; }
+  .home__logo, .home__cue { animation: none; }
+}
+
+/* With nothing selected there is no category heading to make room for, so the mark gets
+   a little more of the panel. */
+.app--home .scroll { padding-top: 0; }
+
+
+/* ============================================================ document rows
+   One document per row, full width; see the `row` prop on DocCard for why the grid of
+   tiles was dropped. */
+.grid--rows {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.card--row {
+  flex-direction: row;
+  align-items: center;
+  gap: 18px;
+  min-height: 0;
+  padding: 16px 20px;
+  border-left-width: 7px;
+}
+.card--row .card__top {
+  flex: 1 1 auto;
+  min-width: 0;
+  align-items: center;
+  gap: 18px;
+}
+.card--row .card__ic {
+  width: 52px;
+  height: 52px;
+  border-radius: 13px;
+}
+/* The title carries the row, so it is bigger than in a tile and clamps to two lines rather
+   than three — a third line here means the row is taller than a finger and the list stops
+   scanning cleanly. */
+.card--row .card__t {
+  font-size: 1.3rem;
+  font-weight: 700;
+  line-height: 1.28;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+.card--row .card__meta {
+  margin-top: 0;
+  flex: 0 0 auto;
+  justify-content: flex-end;
+  max-width: 44%;
+}
+.card__go {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  color: var(--sep-ink-muted);
+  opacity: 0.55;
+}
+.card--row:active { transform: scale(0.995); }
+
+/* Below this the chips and the title are competing for the same room, and the title wins.
+   The extra line is bought with the space the chips gave up: on a phone-width screen two
+   lines clipped a third of these titles mid-word. */
+@media (max-width: 720px) {
+  .card--row .card__meta { display: none; }
+  .card--row .card__t {
+    font-size: 1.14rem;
+    -webkit-line-clamp: 3;
+    line-clamp: 3;
+  }
+  .card--row .card__ic { width: 44px; height: 44px; }
+  .card--row { gap: 12px; }
+  .card--row .card__top { gap: 12px; }
+}
+
+
+/* The way out of a document says where it goes, and is the only coloured control on the
+   toolbar so it is found without looking for it. */
+.vbtn--exit {
+  background: rgba(255, 255, 255, 0.16);
+  border: 1px solid rgba(255, 255, 255, 0.28);
+}
+.vbtn--exit:active { background: rgba(255, 255, 255, 0.3); }
+
+
+/* While a turn is running the sheets are a faithful snapshot of the page, so the live stage
+   underneath them is redundant — and it was not quite hidden: the trailing sheet drifts a
+   little for parallax, and the strip that opened up behind it showed the real page still
+   sitting there, which read as a seam down the edge of the screen. Hiding the stage also
+   means the page being rasterised for the new page number does nothing visible until the
+   sheets clear. `visibility` rather than `display`, so nothing is relaid out and the canvas
+   keeps its backing store. */
+.vw__stagewrap--turning .vw__stage { visibility: hidden; }

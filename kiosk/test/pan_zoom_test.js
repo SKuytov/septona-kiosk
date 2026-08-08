@@ -73,9 +73,11 @@ async function pinchAbout(page, cx, cy, from, to) {
 }
 
 async function openFirstDoc(page) {
-  await page.waitForSelector('.card', { timeout: 60000 });
+  // The panel opens on the home screen now: there are no documents on screen until a
+  // category is touched, so this waits for the categories rather than for a card.
+  await page.waitForSelector('.tab', { timeout: 60000 });
   await page.locator('.tab', { hasText: 'Планове евакуация' }).first().click();
-  await page.waitForTimeout(500);
+  await page.waitForSelector('.card', { timeout: 30000 });
   await page.locator('.card').first().click();
   await page.waitForSelector('.vw__canvas', { timeout: 30000 });
   await page.waitForTimeout(1100);

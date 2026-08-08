@@ -42,7 +42,20 @@ async function main() {
   page.on('pageerror', (e) => errors.push(String(e)));
 
   await page.goto(BASE, { waitUntil: 'domcontentloaded' });
-  await page.waitForSelector('.card', { timeout: 30000 });
+  // The panel rests on a home screen with no category selected. The categories are the
+  // only thing on screen at boot; the loop below opens each one in turn.
+  await page.waitForSelector('.tab', { timeout: 30000 });
+
+  /** Returns to the list from the viewer, which now covers the whole screen. */
+  async function backToList() {
+    if (!(await page.locator('.vw').count())) return;
+    await page.locator('.vbtn--back').first().click({ timeout: 10000 }).catch(() => {});
+    // Wait for the overlay to actually leave the DOM: while it is fading it still covers
+    // the list, and clicking the next card silently lands on the overlay instead.
+    await page.waitForSelector('.vw', { state: 'detached', timeout: 15000 }).catch(() => {});
+    await page.waitForSelector('.card', { timeout: 15000 }).catch(() => {});
+    await page.waitForTimeout(150);
+  }
 
   async function openByIndex(i) {
     const t0 = Date.now();
@@ -74,10 +87,10 @@ async function main() {
     return { title: title.trim().slice(0, 34), verdict, ms: Date.now() - t0 };
   }
 
-  // Every category, every document, in both languages. The viewer is never closed
-  // between documents: picking the next one from the list is what a reader actually does,
-  // and it is also 100x faster than closing and reopening, which is what made the older
-  // sweep take a minute per document.
+  // Every category, every document. The viewer used to be left open between documents,
+  // because the list sat beside it and the next card was one click away. As of v1.0.6 the
+  // viewer covers the screen, so each document is closed with the back button before the
+  // next is opened — which is also exactly what a reader does now.
   const tabs = await page.locator('.tab').count();
   const catNames = [];
   for (let i = 0; i < tabs; i++) {
@@ -90,7 +103,12 @@ async function main() {
   const bad = [];
 
   for (const cat of catNames) {
-    await page.locator('.tab', { hasText: cat }).first().click();
+    await backToList();
+    // Tapping the open category closes it and goes home, so only tap it if it is not open.
+    const tab = page.locator('.tab', { hasText: cat }).first();
+    if (!(await tab.evaluate((el) => el.classList.contains('tab--on')).catch(() => false))) {
+      await tab.click();
+    }
     await page.waitForTimeout(700);
     const n = await page.locator('.card').count();
     console.log(`  [${stamp()}] ${cat} — ${n} documents`);
@@ -102,6 +120,7 @@ async function main() {
       } catch (e) {
         res = { title: `#${i}`, verdict: 'threw: ' + String(e).split('\n')[0], ms: -1 };
       }
+      await backToList();
       if (res.verdict === 'ok') good++;
       else {
         bad.push(`[${cat}] ${res.title} -> ${res.verdict}`);

@@ -17,6 +17,7 @@ const VIEWER_WARM_MS = 700;
 const loadViewer = () => import('./components/PdfViewer');
 const PdfViewer = lazy(() => loadViewer().then((m) => ({ default: m.PdfViewer })));
 import { PinPad, ServiceScreen } from './components/ServiceScreen';
+import { HomeScreen } from './components/HomeScreen';
 import { t, plural, formatDate } from './lib/i18n';
 import { catName, matchesLang, DEFAULT_SETTINGS } from './lib/types';
 import type { Doc, Lang, Manifest, SyncState } from './lib/types';
@@ -24,9 +25,20 @@ import { emptyState, getConnection, getLastSync, sync as runSync } from './lib/s
 import { listFileIds, loadManifest, metaGet, metaSet, requestPersistence } from './lib/store';
 import { importSeed } from './lib/seed';
 import { useHoldGesture } from './lib/useHoldGesture';
-import { useMediaQuery, SPLIT_QUERY } from './lib/useMediaQuery';
 
 type Screen = 'boot' | 'browse' | 'service';
+
+/**
+ * How long the panel waits before putting itself back on the home screen.
+ *
+ * A wall panel is left mid-document constantly — somebody reads two pages, walks off, and the
+ * next person finds page 3 of a fire plan with no idea how they got there. Returning to the
+ * home screen means every person who walks up finds the panel in the same state.
+ */
+const IDLE_HOME_MS = 60_000;
+/** The idle check does not need to be precise, and a one-second timer on a wall panel is
+ *  pointless work forever. */
+const IDLE_TICK_MS = 5_000;
 
 export default function App() {
   const [screen, setScreen] = useState<Screen>('boot');
@@ -34,6 +46,14 @@ export default function App() {
   const [lang, setLang] = useState<Lang>('bg');
   const [activeCat, setActiveCat] = useState<string | null>(null);
   const [openDoc, setOpenDoc] = useState<Doc | null>(null);
+  /*
+    The document read most recently, kept after the viewer closes.
+
+    A category holds twenty-odd rows that all begin with the same word. Someone working
+    through them backs out of one and has to find where they were: without a mark the list
+    looks identical to how it looked before they read anything.
+  */
+  const [lastReadId, setLastReadId] = useState<string | null>(null);
   const [searching, setSearching] = useState(false);
   const [pinOpen, setPinOpen] = useState(false);
   const [configured, setConfigured] = useState<boolean | null>(null);
@@ -43,22 +63,16 @@ export default function App() {
   const [syncState, setSyncState] = useState<SyncState>(emptyState());
   const [clock, setClock] = useState(new Date());
 
-  /**
-   * Reading layout.
-   *
-   * Wide enough (the wall panel in portrait, or a tablet) and the document opens beside the
-   * list, so moving between documents costs one tap instead of back-then-forward. A phone
-   * stays with the full-screen reader, where a split would leave both halves too narrow.
-   */
-  const split = useMediaQuery(SPLIT_QUERY);
-  /** Pane layout: the list is hidden to give the page the full width. */
-  const [listHidden, setListHidden] = useState(false);
+  /*
+    A document takes the whole panel. It used to open in a pane beside the list on a wide
+    screen, which is right for a desk but wrong here: this panel is read standing up from a
+    metre away, and half of a 24" portrait screen is not enough for an A4 page at a legible
+    size. One thing at a time, filling the screen.
+  */
   const [fullscreen, setFullscreen] = useState(false);
 
-  // Auto-cycle bookkeeping
-  const [cycling, setCycling] = useState(true);
-  const [elapsed, setElapsed] = useState(0);
-  const lastTouch = useRef<number>(0);
+  /** When the panel was last touched, for the return to the home screen. */
+  const lastTouch = useRef<number>(Date.now());
 
   const settings = manifest?.settings ?? DEFAULT_SETTINGS;
 
@@ -144,8 +158,6 @@ export default function App() {
 
   const noteActivity = useCallback(() => {
     lastTouch.current = Date.now();
-    setCycling(false);
-    setElapsed(0);
   }, []);
 
   // ------------------------------------------------- hardware back button (APK)
@@ -157,11 +169,14 @@ export default function App() {
       else if (openDoc) setOpenDoc(null);
       else if (searching) setSearching(false);
       else if (screen === 'service') setScreen('browse');
+      // Back from the document list is the home screen, which is what the reader sees as
+      // the top of the app. Below that, back does nothing rather than leaving the kiosk.
+      else if (activeCat) setActiveCat(null);
       noteActivity();
     };
     window.addEventListener('kioskBack', onBack);
     return () => window.removeEventListener('kioskBack', onBack);
-  }, [pinOpen, openDoc, searching, screen, noteActivity]);
+  }, [pinOpen, openDoc, searching, screen, activeCat, noteActivity]);
 
   // -------------------------------------------------------------------- clock
   useEffect(() => {
@@ -172,8 +187,8 @@ export default function App() {
   // ---------------------------------------------------- derived content model
   const categories = useMemo(() => {
     if (!manifest) return [];
-    // Only categories that actually have something to show in the active language,
-    // so auto-cycling never lands on a blank screen.
+    // Only categories that actually have something to show in the active language: a
+    // category button that opens an empty list is worse than no button.
     return manifest.categories
       .filter((c) => c.visible)
       .filter((c) => manifest.documents.some((d) => d.categoryId === c.id && matchesLang(d, lang)))
@@ -200,27 +215,29 @@ export default function App() {
     return map;
   }, [manifest, lang]);
 
-  // Keep the selection valid as language filters change the category set.
+  /*
+    Nothing is selected until somebody selects it.
+
+    The panel used to open on the first category and then cycle through the rest on a timer.
+    That was replaced on the COO's reading of it, and he was right: a list that changes on
+    its own is unusable, because the thing you were about to touch moves. The panel now shows
+    the home screen until a category is touched, and then stays on it.
+
+    The only automatic change left is the return to the home screen after a minute of nobody
+    touching anything, which puts the panel back where the next person expects to find it.
+  */
   useEffect(() => {
-    if (!categories.length) {
-      if (activeCat !== null) setActiveCat(null);
-      return;
-    }
-    if (!activeCat || !categories.some((c) => c.id === activeCat)) {
-      setActiveCat(categories[0].id);
-      setElapsed(0);
-    }
+    if (activeCat && !categories.some((c) => c.id === activeCat)) setActiveCat(null);
   }, [categories, activeCat]);
 
-  const activeIndex = Math.max(0, categories.findIndex((c) => c.id === activeCat));
-  const current = categories[activeIndex];
+  const current = categories.find((c) => c.id === activeCat) || null;
   const currentDocs = current ? docsByCat.get(current.id) || [] : [];
-  const cycleSeconds = Math.max(5, current?.cycleSeconds || settings.cycleSeconds || 45);
+  /** Home is simply nothing being selected. */
+  const atHome = !current;
 
-  // ------------------------------------------------------------- auto-cycling
-  const busy = searching || !!openDoc || screen !== 'browse' || pinOpen;
-
-  // Any touch anywhere counts as activity and pauses the carousel.
+  // ------------------------------------------------------------- idle return
+  // Any touch anywhere counts, including inside the document viewer, which sends its own
+  // activity through `onActivity` as well as through this listener.
   useEffect(() => {
     const handler = () => noteActivity();
     window.addEventListener('pointerdown', handler, { passive: true });
@@ -231,38 +248,37 @@ export default function App() {
     };
   }, [noteActivity]);
 
-  // One second heartbeat drives both advancing and idle-resume.
+  const goHome = useCallback(() => {
+    setOpenDoc(null);
+    // Going home ends the visit, so the next person does not arrive at a list with somebody
+    // else's place marked in it.
+    setLastReadId(null);
+    setActiveCat(null);
+    setSearching(false);
+    setFullscreen(false);
+    noteActivity();
+  }, [noteActivity]);
+
   useEffect(() => {
-    if (!settings.cycleEnabled || categories.length < 2) return;
+    // The service screen and the PIN pad are somebody standing at the panel doing work, and
+    // resetting under them would be actively harmful.
+    if (screen !== 'browse' || pinOpen) return;
     const timer = setInterval(() => {
-      // Resume after the configured idle period, but never while the user is
-      // reading a document or searching.
-      if (!cycling) {
-        const idleFor = (Date.now() - lastTouch.current) / 1000;
-        if (!busy && lastTouch.current > 0 && idleFor >= (settings.idleResumeSeconds || 90)) {
-          setCycling(true);
-          setElapsed(0);
-        }
-        return;
-      }
-      if (busy) return;
-      setElapsed((e) => {
-        if (e + 1 >= cycleSeconds) {
-          setActiveCat((currentId) => {
-            const idx = categories.findIndex((c) => c.id === currentId);
-            return categories[(idx + 1) % categories.length].id;
-          });
-          return 0;
-        }
-        return e + 1;
-      });
-    }, 1000);
+      if (Date.now() - lastTouch.current < IDLE_HOME_MS) return;
+      // Already home and untouched: nothing to do, and resetting state every five seconds
+      // forever would restart the home screen's animations.
+      if (atHome && !openDoc && !searching) return;
+      goHome();
+    }, IDLE_TICK_MS);
     return () => clearInterval(timer);
-  }, [cycling, busy, categories, cycleSeconds, settings.cycleEnabled, settings.idleResumeSeconds]);
+  }, [screen, pinOpen, atHome, openDoc, searching, goHome]);
 
   const pickCategory = (catId: string) => {
-    setActiveCat(catId);
-    setElapsed(0);
+    // Touching the category that is already open closes it and goes back to the home
+    // screen, so the mark on the wall is never more than one touch away.
+    setActiveCat((c) => (c === catId ? null : catId));
+    setOpenDoc(null);
+    setLastReadId(null);
     noteActivity();
   };
 
@@ -271,17 +287,6 @@ export default function App() {
   // there for why plain pointer events on the logo image never worked on the device.
   const openService = useCallback(() => setPinOpen(true), []);
   const hold = useHoldGesture(openService, 3000);
-
-  // ----------------------------------------------------------- layout guards
-  // Collapsing the list and full screen only exist in the split layout. Leaving either set
-  // while the window narrows to a phone would hide the list with nothing able to bring it
-  // back, so both are dropped as soon as the split does.
-  useEffect(() => {
-    if (!split) {
-      setListHidden(false);
-      setFullscreen(false);
-    }
-  }, [split]);
 
   // Closing a document also leaves full screen: otherwise the board itself would come back
   // with the header and category rail still hidden.
@@ -345,20 +350,10 @@ export default function App() {
 
   const totalDocs = manifest ? manifest.documents.filter((d) => matchesLang(d, lang)).length : 0;
 
-  /**
-   * Whether the board and a document are on screen together.
-   *
-   * The split only appears once something is open. With nothing open the panel is an attract
-   * screen cycling through the categories, and that wants the full width for the grid rather
-   * than two thirds of it reserved for an empty reading pane.
-   */
-  const splitOpen = split && !!openDoc;
-
   return (
-    // While a document is open the header and category rail give up some of their height to
-    // the page: see `.app--reading` in app.css. On a tablet in portrait they were taking a
-    // third of the screen before the document even started.
-    <div className={`app ${splitOpen ? 'app--reading' : ''}`}>
+    // The home screen is the panel's resting state, and the header sheds some of its weight
+    // for it: see `.app--home` in app.css.
+    <div className={`app ${atHome ? 'app--home' : ''}`}>
       <header className="hdr">
         {/*
           The gesture is bound to this wrapper, not to the image. Android WebView runs its
@@ -455,50 +450,34 @@ export default function App() {
                 <Icon name={c.icon} size={22} style={{ color: on ? c.colour : undefined }} />
                 <span>{catName(c, lang)}</span>
                 <span className="tab__count">{count}</span>
-                {on && cycling && settings.cycleEnabled && categories.length > 1 && (
-                  <span className="tab__prog" style={{ width: `${(elapsed / cycleSeconds) * 100}%` }} />
-                )}
               </button>
             );
           })}
 
           <span className="rail__spacer" />
 
-          {categories.length > 1 && settings.cycleEnabled && (
-            <button
-              className={`cyc ${cycling ? '' : 'cyc--off'}`}
-              onClick={() => {
-                if (cycling) { setCycling(false); lastTouch.current = Date.now(); }
-                else { setCycling(true); setElapsed(0); lastTouch.current = 0; }
-              }}
-            >
-              <Icon name={cycling ? 'pause' : 'play'} size={20} />
-              <span>
-                {cycling
-                  ? `${t(lang, 'autoCycle')} · ${Math.max(0, cycleSeconds - elapsed)}${t(lang, 'seconds')}`
-                  : t(lang, 'paused')}
-              </span>
+          {/* Only offered once there is something to come back from, so the resting panel
+              has no controls on it at all. */}
+          {!atHome && (
+            <button className="cyc" onClick={goHome}>
+              <Icon name="arrowLeft" size={20} />
+              <span>{t(lang, 'home')}</span>
             </button>
           )}
         </nav>
       )}
 
-      <main
-        className={[
-          'main',
-          splitOpen ? 'main--split' : '',
-          splitOpen && listHidden ? 'main--nolist' : '',
-        ]
-          .filter(Boolean)
-          .join(' ')}
-      >
-        {/*
-          The list is always this same markup. In the split layout it becomes the left column
-          and the cards fall to a single compact row each; nothing about it is rebuilt, so
-          scroll position and the selected document survive collapsing and full screen.
-        */}
+      <main className="main">
         <div className="board">
-        {!manifest || categories.length === 0 ? (
+        {/*
+          The home screen lives in the same pane the list uses, rather than covering the
+          whole panel. Keeping the header and the category buttons in place means touching a
+          category swaps the pane underneath them instead of replacing the screen, which is
+          both faster to read and far less startling on a wall.
+        */}
+        {atHome && manifest && categories.length > 0 ? (
+          <HomeScreen lang={lang} />
+        ) : !manifest || categories.length === 0 ? (
           <div className="empty">
             <span className="empty__ic">
               <Icon name={configured === false ? 'settings' : 'doc'} size={46} />
@@ -521,9 +500,6 @@ export default function App() {
                   <div className="cat-hd__t">{catName(current, lang)}</div>
                   <div className="cat-hd__s">
                     {currentDocs.length} {plural(lang, currentDocs.length)}
-                    {cycling && settings.cycleEnabled && categories.length > 1
-                      ? ` · ${t(lang, 'tapToPause')}`
-                      : ''}
                   </div>
                 </div>
               </div>
@@ -535,17 +511,20 @@ export default function App() {
                 <div className="empty__t">{t(lang, 'emptyCategory')}</div>
               </div>
             ) : (
-              <div className="grid">
+              /* One document per row, full width. A grid of tiles fitted more titles on
+                 screen but truncated most of them, and a policy document is identified by
+                 its title and nothing else — the whole title has to be readable. */
+              <div className="grid grid--rows">
                 {currentDocs.map((d) => (
                   <DocCard
                     key={d.id}
                     doc={d}
                     lang={lang}
-                    category={current}
+                    category={current ?? undefined}
                     cached={cachedIds.has(d.versionId)}
-                    compact={splitOpen}
-                    selected={splitOpen && openDoc?.id === d.id}
-                    onOpen={(doc) => { setOpenDoc(doc); noteActivity(); }}
+                    row
+                    selected={d.id === lastReadId}
+                    onOpen={(doc) => { setOpenDoc(doc); setLastReadId(doc.id); noteActivity(); }}
                   />
                 ))}
               </div>
@@ -554,29 +533,6 @@ export default function App() {
         )}
         </div>
 
-        {/*
-          Wide layout: the document lives here, beside the list, and takes every pixel the
-          list does not. Full screen is handled inside the viewer by a class that lifts it to
-          a fixed overlay, which behaves far more predictably in a WebView than the
-          Fullscreen API does.
-        */}
-        {splitOpen && (
-          <section className="split__pane">
-            <Suspense fallback={<div className="vw__loading">{t(lang, 'loading')}</div>}>
-            <PdfViewer
-              doc={openDoc}
-              lang={lang}
-              variant="pane"
-              fullscreen={fullscreen}
-              onToggleFullscreen={() => { setFullscreen((f) => !f); noteActivity(); }}
-              listHidden={listHidden}
-              onToggleList={() => { setListHidden((h) => !h); noteActivity(); }}
-              onClose={() => { setOpenDoc(null); noteActivity(); }}
-              onActivity={noteActivity}
-            />
-            </Suspense>
-          </section>
-        )}
       </main>
 
       {searching && manifest && (
@@ -592,10 +548,11 @@ export default function App() {
       )}
 
       {/*
-        Narrow layout: the document covers the screen, because a split on a phone would leave
-        both halves too small to use. Full screen still applies — it drops the toolbars.
+        A document covers the panel completely. Closing it goes back to the home screen
+        rather than to the list: the reader has finished, and the next person should find the
+        panel at rest. The list is still one touch away on the category that is still lit.
       */}
-      {openDoc && !split && (
+      {openDoc && (
         <Suspense fallback={<div className="vw vw--overlay"><div className="vw__loading">{t(lang, 'loading')}</div></div>}>
         <PdfViewer
           doc={openDoc}
@@ -603,7 +560,8 @@ export default function App() {
           variant="overlay"
           fullscreen={fullscreen}
           onToggleFullscreen={() => { setFullscreen((f) => !f); noteActivity(); }}
-          onClose={() => { setOpenDoc(null); noteActivity(); }}
+          onBack={() => { setOpenDoc(null); noteActivity(); }}
+          onClose={goHome}
           onActivity={noteActivity}
         />
         </Suspense>

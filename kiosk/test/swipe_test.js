@@ -1,6 +1,8 @@
 /*
  * Swiping between pages.
  *
+ * As of v1.0.6 the same applies vertically: see pageturn_test.js for the animation itself.
+ *
  * The interesting part is not that a swipe turns the page — it is that the same finger also
  * pans a zoomed page, and the two must not fight. The rule under test: a sideways drag pans
  * while the page still has room to move that way, and turns the page only once it has run
@@ -70,9 +72,10 @@ const canvasTransform = (page) =>
   page.evaluate(() => document.querySelector('.vw__canvas').style.transform || 'none');
 
 async function openMultiPageDoc(page) {
-  await page.waitForSelector('.card', { timeout: 60000 });
+  // No category is selected until somebody touches one; see the home screen.
+  await page.waitForSelector('.tab', { timeout: 60000 });
   await page.locator('.tab', { hasText: 'Планове евакуация' }).first().click();
-  await page.waitForTimeout(600);
+  await page.waitForSelector('.card', { timeout: 30000 });
   await page.locator('.card').first().click();
   await page.waitForSelector('.vw__canvas', { timeout: 30000 });
   await page.waitForTimeout(1200);
@@ -137,11 +140,40 @@ async function run(size) {
   await swipe(cdp, { x: right, y: midY }, { x: right - 70, y: midY }, { steps: 3, delay: 8 });
   ok('a fast flick turns the page', (await pageOf(page)) === before + 1, `${before} -> ${await pageOf(page)}`);
 
-  // ---- 4. a vertical drag is a scroll, not a page turn --------------------------
+  // ---- 4. a vertical drag scrolls while there is page left, then turns -----------
+  /*
+    Up and down turn pages as of v1.0.6. They did not before, and this test asserted that
+    they did not. The rule is the same one the sideways drag has always followed: the drag
+    scrolls while the page still has somewhere to go on that axis, and turns only when it has
+    run out — so on a page that is taller than the stage, an upward drag reads to the bottom
+    first, and only the next one turns.
+  */
+  const midX = box.x + box.width / 2;
+  const vRoom = await page.evaluate(() => {
+    const st = document.querySelector('.vw__stage');
+    st.scrollTop = 0;
+    return st.scrollHeight - st.clientHeight;
+  });
+  await page.waitForTimeout(200);
   before = await pageOf(page);
-  await swipe(cdp, { x: box.x + box.width / 2, y: box.y + box.height - 60 },
-                   { x: box.x + box.width / 2, y: box.y + 60 }, { steps: 10, delay: 16 });
-  ok('dragging up does not turn the page', (await pageOf(page)) === before, `page ${await pageOf(page)}`);
+  if (vRoom > 40) {
+    await swipe(cdp, { x: midX, y: box.y + box.height - 60 }, { x: midX, y: box.y + box.height - 200 }, { steps: 10, delay: 30 });
+    ok('with page left to read, dragging up scrolls instead of turning', (await pageOf(page)) === before, `page ${await pageOf(page)}`);
+    ok('and it really did scroll', (await scrollState(page)).top > 10, `scrollTop ${(await scrollState(page)).top}`);
+    await page.evaluate(() => { const st = document.querySelector('.vw__stage'); st.scrollTop = st.scrollHeight; });
+    await page.waitForTimeout(250);
+  } else {
+    ok('with page left to read, dragging up scrolls instead of turning', true, 'the page fits, nothing to scroll');
+    ok('and it really did scroll', true, 'skipped');
+  }
+  before = await pageOf(page);
+  await swipe(cdp, { x: midX, y: box.y + box.height - 60 }, { x: midX, y: box.y + 60 }, { steps: 10, delay: 16 });
+  ok('at the bottom of the page, dragging up turns it', (await pageOf(page)) === before + 1, `${before} -> ${await pageOf(page)}`);
+  await page.evaluate(() => { document.querySelector('.vw__stage').scrollTop = 0; });
+  await page.waitForTimeout(250);
+  before = await pageOf(page);
+  await swipe(cdp, { x: midX, y: box.y + 60 }, { x: midX, y: box.y + box.height - 60 }, { steps: 10, delay: 16 });
+  ok('and at the top, dragging down goes back', (await pageOf(page)) === before - 1, `${before} -> ${await pageOf(page)}`);
 
   // ---- 5. zoomed in, a swipe pans before it turns -------------------------------
   // Two presses of zoom-in put the page wider than the stage.
