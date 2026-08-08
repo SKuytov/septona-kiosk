@@ -24,6 +24,9 @@ trap 'on_error "$?" "$LINENO" "$BASH_COMMAND"' ERR
 
 REPO_URL="${REPO_URL:-https://github.com/SKuytov/septona-kiosk.git}"
 INSTALL_DIR="${INSTALL_DIR:-/opt/septona-kiosk}"
+# Remember whether the port was chosen deliberately: on an update the port recorded in
+# .env wins over the default, but an explicit HTTP_PORT= must still win over both.
+HTTP_PORT_EXPLICIT="${HTTP_PORT:+yes}"
 HTTP_PORT="${HTTP_PORT:-8080}"
 BRANCH="${BRANCH:-main}"
 
@@ -50,11 +53,28 @@ case "$(uname -m)" in
   *) die "Unsupported architecture: $(uname -m). Need x86_64 or aarch64." ;;
 esac
 
-# A port already in use is the single most common cause of a failed first start,
-# and the error Docker gives for it is not obvious. Check before changing anything.
-# Capture first, match second: `ss | grep -q` closes the pipe early, which makes
-# ss die of SIGPIPE and — under pipefail — silently inverts the test.
-if command -v ss >/dev/null 2>&1; then
+# Re-running over an existing installation is the documented way to update, so decide
+# that first: several checks below must not treat our own running stack as a conflict.
+# Written as if/fi on purpose: a bare `[ ... ] && VAR=true` returns 1 when the file is
+# absent, which under `set -e` would abort the installer on every first install.
+UPDATING=false
+if [ -f "${INSTALL_DIR}/.env" ]; then
+  UPDATING=true
+  # Honour the port the installation actually runs on, not the default, so the check
+  # below and the closing summary both refer to the right one.
+  EXISTING_PORT="$(grep -E '^HTTP_PORT=' "${INSTALL_DIR}/.env" 2>/dev/null | cut -d= -f2- || true)"
+  if [ -n "${EXISTING_PORT:-}" ] && [ -z "${HTTP_PORT_EXPLICIT:-}" ]; then
+    HTTP_PORT="$EXISTING_PORT"
+  fi
+fi
+
+# A port already in use is the single most common cause of a failed first start, and the
+# error Docker gives for it is not obvious. Check before changing anything — but only on
+# a first install: on an update the listener on that port is this application itself, and
+# compose replaces its own container.
+# Capture first, match second: `ss | grep -q` closes the pipe early, which makes ss die
+# of SIGPIPE and — under pipefail — silently inverts the test.
+if [ "$UPDATING" = false ] && command -v ss >/dev/null 2>&1; then
   LISTENING="$(ss -ltn 2>/dev/null || true)"
   if grep -qE "[:.]${HTTP_PORT}[[:space:]]" <<<"$LISTENING"; then
     die "Port ${HTTP_PORT} is already in use. Re-run with:  HTTP_PORT=9090 sudo -E bash install.sh"
@@ -168,8 +188,12 @@ fi
 # ------------------------------------------------------------------- summary
 IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
 [ -n "$IP" ] || IP="<server-ip>"
-ADMIN_EMAIL_OUT="$(grep -E '^ADMIN_EMAIL=' .env | cut -d= -f2-)"
-ADMIN_PASS_OUT="$(grep -E '^ADMIN_PASSWORD=' .env | cut -d= -f2-)"
+# `|| true` matters: grep exits 1 when the line is absent, which would abort the
+# installer here — after everything has already succeeded — on a hand-edited .env.
+ADMIN_EMAIL_OUT="$(grep -E '^ADMIN_EMAIL=' .env 2>/dev/null | cut -d= -f2- || true)"
+ADMIN_PASS_OUT="$(grep -E '^ADMIN_PASSWORD=' .env 2>/dev/null | cut -d= -f2- || true)"
+[ -n "$ADMIN_EMAIL_OUT" ] || ADMIN_EMAIL_OUT="admin@septona.local"
+[ -n "$ADMIN_PASS_OUT" ] || ADMIN_PASS_OUT="(вижте ADMIN_PASSWORD в ${INSTALL_DIR}/.env)"
 
 cat <<EOF
 

@@ -60,8 +60,10 @@ run() { # name, install_dir, compose_rc, health -> writes $ROOT/<name>.out
   local bin="$ROOT/$name/bin"
   setup_shims "$bin" "$rc" "$health"
   mkdir -p "$dir"
-  ( export PATH="$bin:$PATH" INSTALL_DIR="$dir" HTTP_PORT="${PORT:-8099}" \
-           REPO_URL=https://example.invalid/x.git
+  ( export PATH="$bin:$PATH" INSTALL_DIR="$dir" REPO_URL=https://example.invalid/x.git
+    # Only set HTTP_PORT when the caller asked for one: an unset HTTP_PORT is exactly
+    # how a real update runs, and is what lets .env decide the port.
+    if [ -n "${PORT:-}" ]; then export HTTP_PORT="$PORT"; else unset HTTP_PORT; fi
     cd /tmp && cat "$SRC" | bash ) > "$ROOT/$name.out" 2>&1
   echo $?
 }
@@ -69,7 +71,7 @@ run() { # name, install_dir, compose_rc, health -> writes $ROOT/<name>.out
 rm -rf "$ROOT"; mkdir -p "$ROOT"; : > "$ROOT/compose.log"
 
 echo "== 1. fresh install, everything healthy"
-D="$ROOT/fresh/opt"; RC=$(run fresh "$D")
+D="$ROOT/fresh/opt"; RC=$(PORT=8099 run fresh "$D")
 check "exits 0" "$RC" 0
 O="$ROOT/fresh.out"
 has  "reaches Configuring"    "==> Configuring"           "$O"
@@ -100,7 +102,7 @@ has  "db name recorded"   "septona_kiosk"      "$E"
 if grep -q "$P" "$ROOT/fresh.out"; then ok "the password it wrote is the one it printed"; else bad "printed password differs from .env"; fi
 
 echo "== 3. passwords differ between installs"
-D2="$ROOT/fresh2/opt"; run fresh2 "$D2" >/dev/null
+D2="$ROOT/fresh2/opt"; PORT=8099 run fresh2 "$D2" >/dev/null
 P2=$(grep '^ADMIN_PASSWORD=' "$D2/.env" | cut -d= -f2-)
 if [ "$P" != "$P2" ]; then ok "two installs get different passwords"; else bad "password is not random"; fi
 
@@ -113,12 +115,12 @@ check "password unchanged" "$(grep '^ADMIN_PASSWORD=' "$E" | cut -d= -f2-)" "$P"
 hasnt "does not reprint a new password" "Write this password down" "$ROOT/rerun.out"
 
 echo "== 5. failures are now reported, not silent"
-RC=$(run buildfail "$ROOT/bf/opt" 1)
+RC=$(PORT=8099 run buildfail "$ROOT/bf/opt" 1)
 if [ "$RC" != 0 ]; then ok "compose failure exits non-zero ($RC)"; else bad "compose failure went unnoticed"; fi
 has "names the failing line" "Installation stopped at line" "$ROOT/buildfail.out"
 has "names the command"      "docker compose up"            "$ROOT/buildfail.out"
 
-RC=$(run unhealthy "$ROOT/uh/opt" 0 bad)
+RC=$(PORT=8099 run unhealthy "$ROOT/uh/opt" 0 bad)
 check "unhealthy exits 1" "$RC" 1
 has "explains the timeout" "did not answer within"    "$ROOT/unhealthy.out"
 has "points at the logs"   "docker compose logs -f"   "$ROOT/unhealthy.out"
@@ -136,6 +138,45 @@ kill $PP 2>/dev/null
 check "port clash exits 1" "$RC" 1
 has "explains the clash" "already in use" "$ROOT/portbusy.out"
 has "offers a way out"   "HTTP_PORT=9090" "$ROOT/portbusy.out"
+
+echo "== 5b. updating an installation whose port is in use (regression)"
+# The stack being updated is itself listening on the port. The pre-flight check must
+# not treat that as a conflict, or updating becomes impossible.
+python3 -c "
+import socket,time
+s=socket.socket(); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+s.bind(('0.0.0.0',8097)); s.listen(1); time.sleep(30)
+" & PP=$!
+sleep 2
+RC=$(PORT=8097 run updbusy "$D")     # $D already has a .env from test 1
+kill $PP 2>/dev/null
+check "update over a live port exits 0" "$RC" 0
+has  "recognised as an update" "already exists" "$ROOT/updbusy.out"
+hasnt "no port complaint"      "already in use" "$ROOT/updbusy.out"
+has  "still rebuilds"          "Building and starting" "$ROOT/updbusy.out"
+
+echo "== 5c. a fresh install is still blocked by a busy port"
+python3 -c "
+import socket,time
+s=socket.socket(); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+s.bind(('0.0.0.0',8096)); s.listen(1); time.sleep(30)
+" & PP=$!
+sleep 2
+RC=$(PORT=8096 run freshbusy "$ROOT/fb2/opt")
+kill $PP 2>/dev/null
+check "fresh install still refuses" "$RC" 1
+has "explains the clash" "already in use" "$ROOT/freshbusy.out"
+
+echo "== 5d. the port from .env is used on an update"
+mkdir -p "$ROOT/pv/opt"
+printf 'HTTP_PORT=9091\nADMIN_PASSWORD=%s\n' "$P" > "$ROOT/pv/opt/.env"
+RC=$(run portfromenv "$ROOT/pv/opt")
+check "exits 0" "$RC" 0
+has "summary uses the recorded port" ":9091/" "$ROOT/portfromenv.out"
+
+echo "== 5e. an explicit port still overrides .env"
+RC=$(PORT=8095 run portoverride "$ROOT/pv/opt")
+has "explicit port wins" ":8095/" "$ROOT/portoverride.out"
 
 echo "== 6b. the root check still works"
 OUT=$(cd /tmp && cat "$SRC" | bash 2>&1); RC=$?
