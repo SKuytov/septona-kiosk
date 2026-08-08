@@ -121,13 +121,14 @@ admin panel show each display's last-seen time and sync state.
 | PATCH | `/api/categories/{id}` | editor | partial |
 | DELETE | `/api/categories/{id}` | admin | 409 `CATEGORY_NOT_EMPTY` unless `?reassignTo=<id>` |
 | POST | `/api/categories/reorder` | editor | `{order:[id,…]}` |
-| GET | `/api/documents` | viewer | `?categoryId=&q=&language=&page=&pageSize=` |
+| GET | `/api/documents` | viewer | `?categoryId=&q=&language=&page=&pageSize=` · `?deleted=live\|include\|only` (default `live`) |
 | GET | `/api/documents/{id}` | viewer | includes full `versions[]` |
 | POST | `/api/documents` | editor | multipart: `file` + JSON `meta` field |
 | PATCH | `/api/documents/{id}` | editor | metadata only |
 | POST | `/api/documents/{id}/versions` | editor | multipart `file`, `note` → new version, becomes current |
 | POST | `/api/documents/{id}/versions/{versionId}/restore` | editor | makes an old version current again |
-| DELETE | `/api/documents/{id}` | admin | soft delete, `?hard=true` for admin purge |
+| DELETE | `/api/documents/{id}` | admin | archives (soft). `?hard=true` deletes the rows **and** the PDF files from disk, keeping any blob still referenced by another document. Returns `{ok, hard, versions, filesRemoved}` |
+| POST | `/api/documents/{id}/restore` | editor | brings an archived document back |
 | GET | `/api/documents/{id}/versions/{versionId}/file` | viewer | inline preview |
 | GET | `/api/audit` | viewer | `?entity=&entityId=&actorId=&from=&to=&page=` |
 | GET | `/api/users` / POST / PATCH / DELETE | admin | |

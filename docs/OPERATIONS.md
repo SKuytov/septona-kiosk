@@ -34,9 +34,33 @@ rollback itself appears in the audit log.
 
 ## Removing a document
 
-**Изтрий** performs a soft delete. It disappears from the panels immediately (on next
-sync) and from the default admin list, but the record and every version stay in the
-database for audit purposes.
+Each row in **Документи** has a bin icon, and so does the document's own page. It offers
+two different things, and the difference matters.
+
+**Архивирай** is the safe one, and the default. The document leaves the panels at their
+next sync and leaves the document list. Every version, and the whole audit trail, stay in
+the database. Use it for a policy that has been withdrawn — you keep the evidence that it
+existed and what it said.
+
+To find an archived document again, switch the list from **Активни** to **Архив**.
+**Върни** puts it straight back on the panels.
+
+**Изтрий окончателно** is only reachable from **Архив**, and it asks you to type the
+document's title before it will do anything. It deletes the rows *and* the PDF files from
+the server's disk. Nothing brings it back. The audit trail entry survives, so there is
+still a record that someone deleted something and when.
+
+Two things worth knowing:
+
+- A panel that is currently offline keeps its cached copy of the PDF until it next reaches
+  the server. Deleting a document does not reach out and wipe the displays.
+- If two documents were uploaded from byte-identical files, the server stores the file
+  once. Deleting one of them permanently leaves the file in place for the other. The
+  toast tells you how many files actually left the disk.
+
+Only an **admin** can archive or delete. An editor can upload and revise, but not remove.
+
+To empty a whole category, tick the header checkbox and use **Архивирай избраните**.
 
 ---
 

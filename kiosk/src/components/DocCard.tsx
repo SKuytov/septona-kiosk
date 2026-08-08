@@ -57,6 +57,15 @@ export function DocCard({
   onOpen,
 }: Props) {
   const accent = category?.colour || 'var(--sep-blue)';
+  /*
+    Whether there is anything to put on the right of the row at all.
+
+    An empty element still holds its padding and its gap, so leaving it in place would keep
+    a strip of the row reserved for chips that are not there. Rendered conditionally rather
+    than hidden with :has(), which the panel's WebView cannot be relied on to support.
+  */
+  const showMeta =
+    !row || doc.pinned || !cached || Boolean(showCategory && category);
   return (
     <button
       className={[
@@ -82,23 +91,36 @@ export function DocCard({
       </div>
 
       {/*
-        In a row the details sit beside the title rather than under it, and the stylesheet
-        drops them entirely on a narrow panel. They are still rendered so a screen reader and
-        the browser version have them; what a document is called is the only thing that has
-        to survive at every width.
+        The row on the panel carries the title and nothing else.
+
+        Language, page count, size and version number were all on the right of every row.
+        None of them helps anyone choose a document: the language switch already filters the
+        list, and nobody picks a policy because it is 3 pages or 246 KB. Twenty-one rows of
+        them read as noise beside the one thing that identifies the document.
+
+        Two marks survive, because they are warnings rather than facts about the file: the
+        pin, and the sign that a document has no offline copy and so cannot be opened if the
+        server is unreachable. Both are absent on a healthy panel.
       */}
+      {showMeta ? (
       <div className="card__meta">
-        <span className="chip chip--lang">{doc.language === 'both' ? 'BG · EN' : doc.language.toUpperCase()}</span>
-        {doc.pageCount ? (
-          <span className="chip">
-            {doc.pageCount} {t(lang, 'pages')}
-          </span>
-        ) : null}
-        <span className="chip">{formatBytes(doc.sizeBytes)}</span>
-        {doc.versionNumber > 1 ? (
-          <span className="chip">
-            {t(lang, 'version')} {doc.versionNumber}
-          </span>
+        {!row ? (
+          <>
+            <span className="chip chip--lang">
+              {doc.language === 'both' ? 'BG · EN' : doc.language.toUpperCase()}
+            </span>
+            {doc.pageCount ? (
+              <span className="chip">
+                {doc.pageCount} {t(lang, 'pages')}
+              </span>
+            ) : null}
+            <span className="chip">{formatBytes(doc.sizeBytes)}</span>
+            {doc.versionNumber > 1 ? (
+              <span className="chip">
+                {t(lang, 'version')} {doc.versionNumber}
+              </span>
+            ) : null}
+          </>
         ) : null}
         {doc.pinned ? (
           <span className="chip chip--pin">
@@ -114,6 +136,7 @@ export function DocCard({
           </span>
         ) : null}
       </div>
+      ) : null}
 
       {row && (
         <span className="card__go" aria-hidden="true">

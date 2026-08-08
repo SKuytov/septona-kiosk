@@ -19,3 +19,17 @@
 @media(max-width:1024px){.app-shell{grid-template-columns:76px minmax(0,1fr)}.sidebar{width:76px;padding:var(--space-5) var(--space-3);align-items:center}.brand{padding:var(--space-2);margin-bottom:var(--space-6)}.brand img{width:38px;height:38px;object-fit:cover;object-position:left}.nav-item{width:46px;padding:0;justify-content:center}.nav-item span,.account__copy,.sidebar__logout span{display:none}.account{padding:0;margin-bottom:var(--space-3)}.main{grid-column:2}.login-page{grid-template-columns:1fr}.login-aside{display:none}}
 @media(max-width:680px){.page{padding:var(--space-4)}.topbar{padding:var(--space-3) var(--space-4)}.topbar__meta{display:none}.page-heading{align-items:stretch;flex-direction:column;gap:var(--space-4)}.page-heading>.button{align-self:flex-start}.stat-grid{grid-template-columns:1fr 1fr;gap:var(--space-3)}.stat-card{padding:var(--space-4)}.form-grid{grid-template-columns:1fr}.form-grid--full{grid-column:auto}.toolbar{align-items:stretch}.toolbar>*{width:100%}.toolbar .search-field{min-width:0}.filter-select{min-width:0}.modal-backdrop{padding:var(--space-3)}.modal__header,.modal__body,.modal__footer{padding-left:var(--space-4);padding-right:var(--space-4)}.audit-detail__content{grid-template-columns:1fr}.preview{height:430px}.login-panel{padding:var(--space-6)}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;transition-duration:.01ms!important}}
+
+/* ---------------------------------------------------------------- delete controls
+   A destructive row action reads as ordinary until it is pointed at: the trash icons sit in
+   twenty-one rows of a table, and twenty-one red buttons would make the page look like a
+   list of errors. */
+.icon-button--danger:hover{background:#fdecea;color:var(--sep-danger)}
+.icon-button--danger:focus-visible{outline:2px solid var(--sep-danger);outline-offset:2px}
+
+/* Live / archive switch. Two states of one list rather than two pages, so it is a segmented
+   control and not a pair of tabs in the sidebar. */
+.seg{display:inline-flex;padding:3px;gap:2px;background:var(--sep-blue-pale);border:1px solid var(--sep-line);border-radius:var(--radius-sm)}
+.seg__btn{display:inline-flex;align-items:center;gap:6px;min-height:34px;padding:0 var(--space-3);border-radius:calc(var(--radius-sm) - 2px);font-size:var(--text-sm);font-weight:700;color:var(--sep-ink-muted);white-space:nowrap;transition:all var(--transition-interactive)}
+.seg__btn:hover:not(.seg__btn--on){color:var(--sep-navy)}
+.seg__btn--on{background:#fff;color:var(--sep-navy);box-shadow:0 1px 2px rgba(16,23,54,.12)}

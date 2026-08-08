@@ -25,6 +25,32 @@ function store(buffer) {
   return { hash, storedPath: path.relative(DATA_DIR, abs), sizeBytes: buffer.length };
 }
 
+/**
+ * Deletes a stored blob, and prunes the two directory levels it lived in if they are now
+ * empty. Never throws: a missing file means the job is already done, and a delete that
+ * cannot reach the disk must not roll back a database transaction that already committed.
+ *
+ * The caller is responsible for checking that no other version still points at these bytes
+ * — storage is content-addressed, so two documents holding an identical file share one blob.
+ * @param {string} storedPath path relative to DATA_DIR @returns {boolean} whether a file went
+ */
+function removeStored(storedPath) {
+  try {
+    const abs = path.join(DATA_DIR, storedPath);
+    if (!fs.existsSync(abs)) return false;
+    fs.unlinkSync(abs);
+    for (const dir of [path.dirname(abs), path.dirname(path.dirname(abs))]) {
+      if (path.relative(FILES_DIR, dir).startsWith('..')) break;
+      if (fs.readdirSync(dir).length === 0) fs.rmdirSync(dir);
+      else break;
+    }
+    return true;
+  } catch (e) {
+    console.error('[storage] could not remove', storedPath, e.message);
+    return false;
+  }
+}
+
 const readStored = (storedPath) => fs.readFileSync(path.join(DATA_DIR, storedPath));
 const absPath = (storedPath) => path.join(DATA_DIR, storedPath);
 const existsStored = (storedPath) => fs.existsSync(absPath(storedPath));
@@ -63,5 +89,6 @@ async function toPdfBuffer(buffer, originalName, allowConversion) {
 }
 
 module.exports = {
-  DATA_DIR, FILES_DIR, store, readStored, absPath, existsStored, convertToPdf, toPdfBuffer,
+  DATA_DIR, FILES_DIR, store, readStored, removeStored, absPath, existsStored,
+  convertToPdf, toPdfBuffer,
 };

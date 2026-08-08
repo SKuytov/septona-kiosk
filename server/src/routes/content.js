@@ -129,7 +129,19 @@ const DOC_SELECT = `
   FROM documents d LEFT JOIN document_versions v ON v.id = d.current_version_id`;
 
 router.get('/documents', requireRole('viewer'), asyncH(async (req, res) => {
-  const where = [req.query.includeDeleted === 'true' ? '1=1' : 'd.deleted_at IS NULL'];
+  /*
+    Live documents by default. `deleted=only` is what the admin's archive view asks for, and
+    it has to be a server filter rather than a client one: the list is paginated, so filtering
+    the current page would show "3 archived" out of whatever happened to be on page one.
+  */
+  const deleted = req.query.deleted === 'only' ? 'only'
+    : (req.query.deleted === 'include' || req.query.includeDeleted === 'true') ? 'include'
+    : 'live';
+  const where = [
+    deleted === 'only' ? 'd.deleted_at IS NOT NULL'
+      : deleted === 'include' ? '1=1'
+      : 'd.deleted_at IS NULL',
+  ];
   const vals = [];
   if (req.query.categoryId) { vals.push(req.query.categoryId); where.push(`d.category_id = $${vals.length}`); }
   if (req.query.language && req.query.language !== 'all') {
@@ -145,7 +157,7 @@ router.get('/documents', requireRole('viewer'), asyncH(async (req, res) => {
     `SELECT COUNT(*)::int AS count FROM documents d WHERE ${where.join(' AND ')}`, vals);
   const { rows } = await q(
     `${DOC_SELECT} WHERE ${where.join(' AND ')}
-     ORDER BY d.pinned DESC, d.sort_order, d.title_bg
+     ORDER BY ${deleted === 'only' ? 'd.deleted_at DESC,' : ''} d.pinned DESC, d.sort_order, d.title_bg
      LIMIT ${pageSize} OFFSET ${(page - 1) * pageSize}`, vals);
   res.json({ documents: rows.map(docOut), total: count, page, pageSize });
 }));
@@ -280,31 +292,73 @@ router.post('/documents/:docId/versions/:versionId/restore', requireRole('editor
     res.json({ document: docOut(rows[0]) });
   }));
 
+/**
+ * Two different operations behind one verb, and the difference matters:
+ *
+ *   archive (default)  — the document leaves the kiosks and the document list, and every
+ *                        version and its audit trail stay exactly where they are. Reversible
+ *                        with POST /documents/:id/restore.
+ *   hard=true          — the rows go, and so do the PDF files on disk. Not reversible.
+ *
+ * Permanent deletion used to leave the files behind: the database rows went, and the PDFs
+ * stayed under data/files forever, so a policy that had been "deleted" was still readable by
+ * anyone with the path. Since storage is content-addressed a blob can be shared by two
+ * documents holding an identical file, so each one is removed only once nothing else refers
+ * to it.
+ */
 router.delete('/documents/:docId', requireRole('admin'), asyncH(async (req, res) => {
   const { rows: cur } = await q('SELECT * FROM documents WHERE id = $1', [req.params.docId]);
   if (!cur.length) throw httpError(404, 'NOT_FOUND', 'Документът не е намерен.');
-  if (req.query.hard === 'true') {
+  const hard = req.query.hard === 'true';
+  let filesRemoved = 0;
+  let versions = 0;
+  if (hard) {
+    // Collected before the delete, checked for other owners after it, so the check sees the
+    // rows that survive rather than the ones on their way out.
+    const { rows: blobs } = await q(
+      'SELECT id, stored_path, sha256 FROM document_versions WHERE document_id = $1',
+      [req.params.docId]);
+    versions = blobs.length;
     await tx(async (c) => {
       await c.query('DELETE FROM documents WHERE id = $1', [req.params.docId]);
       await bumpManifest(c);
     });
+    const seen = new Set();
+    for (const b of blobs) {
+      if (seen.has(b.sha256)) continue;
+      seen.add(b.sha256);
+      const { rows: other } = await q(
+        'SELECT 1 FROM document_versions WHERE sha256 = $1 LIMIT 1', [b.sha256]);
+      if (other.length) continue; // another document holds the same bytes
+      if (storage.removeStored(b.stored_path)) filesRemoved++;
+    }
   } else {
     await tx(async (c) => {
       await c.query('UPDATE documents SET deleted_at = now() WHERE id = $1', [req.params.docId]);
       await bumpManifest(c);
     });
   }
-  await audit(req, { action: 'document.delete', entity: 'document', entityId: req.params.docId,
-    summary: `${req.query.hard === 'true' ? 'Окончателно изтрит' : 'Архивиран'} документ «${cur[0].title_bg}»`,
-    before: { titleBg: cur[0].title_bg } });
-  res.json({ ok: true });
+  await audit(req, { action: hard ? 'document.purge' : 'document.delete', entity: 'document',
+    entityId: req.params.docId,
+    summary: hard
+      ? `Окончателно изтрит документ «${cur[0].title_bg}» — ${versions} ${versions === 1 ? 'версия' : 'версии'}, ${filesRemoved === 1 ? '1 файл премахнат' : `${filesRemoved} файла премахнати`} от диска`
+      : `Архивиран документ «${cur[0].title_bg}»`,
+    before: { titleBg: cur[0].title_bg, versions } });
+  // The archive path reports only what it did. Returning versions:0, filesRemoved:0 for an
+  // archive reads as "nothing was kept" when the opposite is true.
+  res.json(hard ? { ok: true, hard: true, versions, filesRemoved } : { ok: true, hard: false });
 }));
 
 router.post('/documents/:docId/restore', requireRole('editor'), asyncH(async (req, res) => {
+  const { rows: cur } = await q('SELECT * FROM documents WHERE id = $1', [req.params.docId]);
+  if (!cur.length) throw httpError(404, 'NOT_FOUND', 'Документът не е намерен.');
   await q('UPDATE documents SET deleted_at = NULL, updated_at = now() WHERE id = $1', [req.params.docId]);
   await bumpManifest();
   await audit(req, { action: 'document.restore', entity: 'document', entityId: req.params.docId,
-    summary: 'Възстановен документ от архива' });
+    // The title belongs in the summary: the audit page reads as a sentence, and "restored a
+    // document from the archive" with no name in it tells a later reader nothing.
+    summary: `Възстановен от архива документ «${cur[0].title_bg}»`,
+    after: { titleBg: cur[0].title_bg } });
   res.json({ ok: true });
 }));
 

@@ -1269,21 +1269,27 @@ mark { background: #fde68a; color: var(--sep-ink); border-radius: 3px; padding: 
   height: 52px;
   border-radius: 13px;
 }
-/* The title carries the row, so it is bigger than in a tile and clamps to two lines rather
-   than three — a third line here means the row is taller than a finger and the list stops
+/* The title carries the row, so it is bigger than in a tile. With the chips gone it has the
+   full width, and three lines only happen on the longest titles, so the clamp is at three:
+   a clipped title is worse than a slightly taller row. See the note below on why two lines
    scanning cleanly. */
 .card--row .card__t {
   font-size: 1.3rem;
   font-weight: 700;
   line-height: 1.28;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
 }
+/* Only the pin and the no-offline-copy warning are left in here, and on a healthy panel both
+   are absent — the block is then not rendered at all (see DocCard) so the title gets the
+   whole row. Not done with :has(), which the panel's WebView cannot be relied on to support:
+   this is the same reason pageTurn puts its class on the parent element. */
 .card--row .card__meta {
   margin-top: 0;
   flex: 0 0 auto;
   justify-content: flex-end;
-  max-width: 44%;
+  gap: 8px;
+  max-width: 30%;
 }
 .card__go {
   flex: 0 0 auto;
