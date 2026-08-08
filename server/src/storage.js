@@ -55,8 +55,8 @@ const readStored = (storedPath) => fs.readFileSync(path.join(DATA_DIR, storedPat
 const absPath = (storedPath) => path.join(DATA_DIR, storedPath);
 const existsStored = (storedPath) => fs.existsSync(absPath(storedPath));
 
-/** Headless LibreOffice → PDF. Used by the archive importer, and by uploads only
- *  when settings.allowOfficeConversion is enabled. */
+/** Headless LibreOffice → PDF. Used by the one-off archive importer only; uploads through
+ *  the interface are PDF-only. */
 async function convertToPdf(buffer, originalName) {
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'sepconv-'));
   const src = path.join(work, path.basename(originalName));

@@ -33,3 +33,9 @@ kiosk/public/seed/
 
 # Incremental TypeScript build stamp.
 *.tsbuildinfo
+
+# Built app packages. The APK embeds the full document set, so publishing one to a public
+# repository publishes every internal policy PDF with it. Packages are handed over directly.
+dist/*.apk
+# Signing keystore. Anyone holding it can sign an update that Android will accept as ours.
+kiosk/android/keystore/

@@ -34,8 +34,11 @@ type Screen = 'boot' | 'browse' | 'service';
  * A wall panel is left mid-document constantly — somebody reads two pages, walks off, and the
  * next person finds page 3 of a fire plan with no idea how they got there. Returning to the
  * home screen means every person who walks up finds the panel in the same state.
+ *
+ * Set per installation from Настройки in the management platform; the floor keeps a typo of
+ * 0 from sending the panel home while somebody is still reading.
  */
-const IDLE_HOME_MS = 60_000;
+const IDLE_HOME_MS_MIN = 15_000;
 /** The idle check does not need to be precise, and a one-second timer on a wall panel is
  *  pointless work forever. */
 const IDLE_TICK_MS = 5_000;
@@ -75,6 +78,10 @@ export default function App() {
   const lastTouch = useRef<number>(Date.now());
 
   const settings = manifest?.settings ?? DEFAULT_SETTINGS;
+  const idleHomeMs = Math.max(
+    IDLE_HOME_MS_MIN,
+    (settings.homeAfterIdleSeconds || DEFAULT_SETTINGS.homeAfterIdleSeconds) * 1000,
+  );
 
   // ------------------------------------------------------------ initial load
   useEffect(() => {
@@ -264,14 +271,14 @@ export default function App() {
     // resetting under them would be actively harmful.
     if (screen !== 'browse' || pinOpen) return;
     const timer = setInterval(() => {
-      if (Date.now() - lastTouch.current < IDLE_HOME_MS) return;
+      if (Date.now() - lastTouch.current < idleHomeMs) return;
       // Already home and untouched: nothing to do, and resetting state every five seconds
       // forever would restart the home screen's animations.
       if (atHome && !openDoc && !searching) return;
       goHome();
     }, IDLE_TICK_MS);
     return () => clearInterval(timer);
-  }, [screen, pinOpen, atHome, openDoc, searching, goHome]);
+  }, [screen, pinOpen, atHome, openDoc, searching, goHome, idleHomeMs]);
 
   const pickCategory = (catId: string) => {
     // Touching the category that is already open closes it and goes back to the home

@@ -2,11 +2,10 @@ export type Lang = 'bg' | 'en';
 export type DocLang = 'bg' | 'en' | 'both';
 
 export interface KioskSettings {
-  cycleEnabled: boolean;
-  cycleSeconds: number;
-  idleResumeSeconds: number;
-  defaultLanguage: Lang;
   kioskTitle: string;
+  defaultLanguage: Lang;
+  /** Seconds without a touch before the panel puts itself back on the home screen. */
+  homeAfterIdleSeconds: number;
   syncIntervalMinutes: number;
 }
 
@@ -18,7 +17,6 @@ export interface Category {
   icon: string;
   colour: string;
   sortOrder: number;
-  cycleSeconds: number | null;
   visible: boolean;
   parentId: string | null;
 }
@@ -61,11 +59,9 @@ export interface SyncState {
 }
 
 export const DEFAULT_SETTINGS: KioskSettings = {
-  cycleEnabled: true,
-  cycleSeconds: 45,
-  idleResumeSeconds: 90,
-  defaultLanguage: 'bg',
   kioskTitle: 'СЕПТОНА — Документи',
+  defaultLanguage: 'bg',
+  homeAfterIdleSeconds: 60,
   syncIntervalMinutes: 15,
 };
 

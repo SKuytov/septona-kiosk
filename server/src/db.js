@@ -135,14 +135,18 @@ CREATE TABLE IF NOT EXISTS content_state (
 INSERT INTO content_state (id) VALUES (1) ON CONFLICT DO NOTHING;
 `;
 
+/**
+ * Every key here is read by the panel. Automatic cycling between categories was removed
+ * in 1.0.6 — the panel now waits to be touched — so `cycleEnabled`, `cycleSeconds` and
+ * `idleResumeSeconds` are gone rather than left as controls that quietly do nothing.
+ * Rows for retired keys may still sit in the settings table on an existing install;
+ * getSettings ignores them.
+ */
 const DEFAULT_SETTINGS = {
-  cycleEnabled: true,
-  cycleSeconds: 45,
-  idleResumeSeconds: 90,
-  defaultLanguage: 'bg',
   kioskTitle: 'СЕПТОНА — Документи',
+  defaultLanguage: 'bg',
+  homeAfterIdleSeconds: 60,
   syncIntervalMinutes: 15,
-  allowOfficeConversion: false,
 };
 
 async function init() {
@@ -167,7 +171,9 @@ async function bumpManifest(client) {
 async function getSettings() {
   const { rows } = await q('SELECT key, value FROM settings');
   const out = { ...DEFAULT_SETTINGS };
-  for (const r of rows) out[r.key] = r.value;
+  // Only known keys: an upgraded install still has rows for retired settings, and handing
+  // them back would put dead fields into the manifest and the admin form again.
+  for (const r of rows) if (r.key in DEFAULT_SETTINGS) out[r.key] = r.value;
   return out;
 }
 

@@ -73,8 +73,9 @@ and delete.
   keeps its documents.
 - **Deleting** a category that still holds documents is refused. The dialog asks which
   category to move them to first.
-- Per-category `cycleSeconds` overrides the global cycle time — useful for a category
-  with a single large evacuation plan that people need longer to read.
+- **Order** decides where the category sits in the panel's row of tiles; the colour and
+  icon are what people actually recognise on the wall, so keep them stable once a panel
+  has been in use.
 
 ---
 
@@ -120,10 +121,12 @@ everyone out.
 | --- | --- |
 | `kioskTitle` | Text in the panel header next to the logo. |
 | `defaultLanguage` | Language a freshly installed panel starts in. |
-| `cycleEnabled` | Master switch for automatic category cycling. |
-| `cycleSeconds` | Default seconds per category (45). |
-| `idleResumeSeconds` | Inactivity before cycling resumes after a touch (90). |
-| `syncIntervalMinutes` | How often panels poll for changes (15). |
+| `homeAfterIdleSeconds` | Seconds without a touch before the panel closes the document and returns to the home screen (60). Clamped to 15–3600. |
+| `syncIntervalMinutes` | How often panels poll for changes (15). Clamped to 1–1440. |
+
+The automatic category cycling of 1.0.5 and earlier was removed in 1.0.6 — the panel now
+waits to be touched — so `cycleEnabled`, `cycleSeconds` and `idleResumeSeconds` no longer
+exist. Rows left behind in the `settings` table on an upgraded install are ignored.
 
 Lowering `syncIntervalMinutes` makes updates land faster at the cost of more polling.
 Below about 5 minutes there is little benefit — the poll is a small request, but the

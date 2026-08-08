@@ -163,10 +163,21 @@ router.get('/audit', requireRole('viewer'), asyncH(async (req, res) => {
 router.get('/settings', requireRole('viewer'), asyncH(async (_req, res) =>
   res.json({ settings: await getSettings() })));
 
+// A number typed into the panel's timing fields reaches every display, so keep the values
+// inside a range that still leaves the panel usable.
+const NUMERIC_LIMITS = { homeAfterIdleSeconds: [15, 3600], syncIntervalMinutes: [1, 1440] };
+
 router.patch('/settings', requireRole('admin'), asyncH(async (req, res) => {
   const before = await getSettings();
-  for (const [key, value] of Object.entries(req.body || {})) {
+  for (const [key, raw] of Object.entries(req.body || {})) {
     if (!(key in before)) continue;
+    let value = raw;
+    if (NUMERIC_LIMITS[key]) {
+      const [lo, hi] = NUMERIC_LIMITS[key];
+      const n = Number(value);
+      if (!Number.isFinite(n)) throw httpError(400, 'BAD_VALUE', `«${key}» трябва да е число.`);
+      value = Math.min(hi, Math.max(lo, Math.round(n)));
+    }
     await q('INSERT INTO settings (key,value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value = $2',
       [key, JSON.stringify(value)]);
   }

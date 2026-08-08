@@ -32,16 +32,14 @@ router.get('/manifest', asyncH(async (req, res) => {
     manifestVersion: manifest_version,
     generatedAt: new Date().toISOString(),
     settings: {
-      cycleEnabled: settings.cycleEnabled,
-      cycleSeconds: settings.cycleSeconds,
-      idleResumeSeconds: settings.idleResumeSeconds,
-      defaultLanguage: settings.defaultLanguage,
       kioskTitle: settings.kioskTitle,
+      defaultLanguage: settings.defaultLanguage,
+      homeAfterIdleSeconds: settings.homeAfterIdleSeconds,
       syncIntervalMinutes: settings.syncIntervalMinutes,
     },
     categories: cats.map((c) => ({
       id: c.id, slug: c.slug, nameBg: c.name_bg, nameEn: c.name_en, icon: c.icon,
-      colour: c.colour, sortOrder: c.sort_order, cycleSeconds: c.cycle_seconds,
+      colour: c.colour, sortOrder: c.sort_order,
       visible: c.visible, parentId: c.parent_id,
     })),
     documents: docs.map((d) => ({

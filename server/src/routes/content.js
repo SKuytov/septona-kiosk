@@ -1,7 +1,7 @@
 'use strict';
 const express = require('express');
 const multer = require('multer');
-const { q, tx, bumpManifest, getSettings } = require('../db');
+const { q, tx, bumpManifest } = require('../db');
 const { audit } = require('../audit');
 const { requireRole } = require('../auth');
 const { id, slugify, httpError, asyncH, pdfPageCount } = require('../util');
@@ -12,7 +12,7 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 100
 
 const catOut = (r) => ({
   id: r.id, slug: r.slug, nameBg: r.name_bg, nameEn: r.name_en, icon: r.icon,
-  colour: r.colour, sortOrder: r.sort_order, cycleSeconds: r.cycle_seconds,
+  colour: r.colour, sortOrder: r.sort_order,
   visible: r.visible, parentId: r.parent_id, documentCount: Number(r.document_count ?? 0),
 });
 
@@ -51,10 +51,10 @@ router.post('/categories', requireRole('editor'), asyncH(async (req, res) => {
   const { rows: clash } = await q('SELECT 1 FROM categories WHERE slug = $1', [slug]);
   if (clash.length) slug = `${slug}-${catId.slice(-4)}`;
   const { rows } = await q(
-    `INSERT INTO categories (id,slug,name_bg,name_en,icon,colour,sort_order,cycle_seconds,visible,parent_id)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+    `INSERT INTO categories (id,slug,name_bg,name_en,icon,colour,sort_order,visible,parent_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
     [catId, slug, String(b.nameBg).trim(), b.nameEn || '', b.icon || 'doc',
-     b.colour || '#26307A', b.sortOrder ?? 999, b.cycleSeconds ?? null,
+     b.colour || '#26307A', b.sortOrder ?? 999,
      b.visible !== false, b.parentId || null]
   );
   await bumpManifest();
@@ -67,7 +67,7 @@ router.patch('/categories/:catId', requireRole('editor'), asyncH(async (req, res
   const { rows: cur } = await q('SELECT * FROM categories WHERE id = $1', [req.params.catId]);
   if (!cur.length) throw httpError(404, 'NOT_FOUND', 'Категорията не е намерена.');
   const map = { nameBg: 'name_bg', nameEn: 'name_en', icon: 'icon', colour: 'colour',
-    sortOrder: 'sort_order', cycleSeconds: 'cycle_seconds', visible: 'visible', parentId: 'parent_id' };
+    sortOrder: 'sort_order', visible: 'visible', parentId: 'parent_id' };
   const sets = [], vals = [];
   for (const [k, col] of Object.entries(map)) {
     if (req.body[k] !== undefined) { vals.push(req.body[k]); sets.push(`${col} = $${vals.length}`); }
@@ -179,9 +179,12 @@ function parseMeta(req) {
 /** Shared: validate + persist an uploaded file as a new version row. */
 async function ingest(req, client, documentId, versionNumber, note) {
   if (!req.file) throw httpError(400, 'NO_FILE', 'Не е приложен файл.');
-  const settings = await getSettings();
+  // Uploads through the interface are PDF-only, deliberately: a Word file converted on
+  // the server is a different document from the one the author approved, and nobody
+  // would notice the difference until it was on a wall. The converter stays available to
+  // the one-off archive importer only.
   const { buffer, converted } = await storage.toPdfBuffer(
-    req.file.buffer, req.file.originalname, settings.allowOfficeConversion);
+    req.file.buffer, req.file.originalname, false);
 
   if (req.query.allowDuplicate !== 'true') {
     const hash = require('../util').sha256(buffer);

@@ -56,11 +56,9 @@ its whole UI offline, minus the PDF bytes.
   "manifestVersion": 42,              // bumps on ANY content change
   "generatedAt": "2026-08-07T11:00:00Z",
   "settings": {
-    "cycleEnabled": true,
-    "cycleSeconds": 45,               // per-category override wins
-    "idleResumeSeconds": 90,          // resume cycling this long after last touch
-    "defaultLanguage": "bg",
     "kioskTitle": "Септона — Документи",
+    "defaultLanguage": "bg",
+    "homeAfterIdleSeconds": 60,       // untouched this long → back to the home screen
     "syncIntervalMinutes": 15
   },
   "categories": [
@@ -72,7 +70,6 @@ its whole UI offline, minus the PDF bytes.
       "icon": "exit",                 // see icon set below
       "colour": "#C0392B",            // accent for the tile
       "sortOrder": 10,
-      "cycleSeconds": null,           // null → inherit settings.cycleSeconds
       "visible": true,
       "parentId": null
     }
@@ -117,7 +114,7 @@ admin panel show each display's last-seen time and sync state.
 | Method | Path | Role | Notes |
 |---|---|---|---|
 | GET | `/api/categories` | viewer | flat list incl. hidden |
-| POST | `/api/categories` | editor | `{nameBg,nameEn,icon,colour,sortOrder,parentId,cycleSeconds,visible}` |
+| POST | `/api/categories` | editor | `{nameBg,nameEn,icon,colour,sortOrder,parentId,visible}` |
 | PATCH | `/api/categories/{id}` | editor | partial |
 | DELETE | `/api/categories/{id}` | admin | 409 `CATEGORY_NOT_EMPTY` unless `?reassignTo=<id>` |
 | POST | `/api/categories/reorder` | editor | `{order:[id,…]}` |
@@ -141,8 +138,8 @@ admin panel show each display's last-seen time and sync state.
 Max 100 MB. **PDF only** — anything else is rejected with `415 UNSUPPORTED_FILE_TYPE`
 and the message «Приемат се само PDF файлове.» The admin UI must state this on the
 dropzone. (A headless-LibreOffice converter ships with the server but is disabled by
-default; `settings.allowOfficeConversion = true` enables it, and the one-off archive
-importer uses it to rescue legacy .docx/.xlsx/.ods files.)
+default and has no setting in the interface — the one-off archive importer uses it to
+rescue legacy .docx/.xlsx/.ods files, and uploads through the panel stay PDF-only.)
 
 Duplicate detection by sha256 → `409 DUPLICATE_CONTENT` with the colliding document
 id (override with `?allowDuplicate=true`).
