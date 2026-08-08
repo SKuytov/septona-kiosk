@@ -7,10 +7,10 @@
  * cached content stays on screen.
  */
 import type { Manifest, SyncState } from './types';
-import { DEFAULT_SETTINGS } from './types';
+import { DEFAULT_SETTINGS, allFiles } from './types';
 import * as store from './store';
 
-export const APP_VERSION = '1.0.8';
+export const APP_VERSION = '1.0.9';
 
 export interface Connection {
   baseUrl: string;
@@ -141,30 +141,34 @@ export async function sync(onProgress?: (s: Partial<SyncState>) => void): Promis
   // Save the manifest immediately: metadata is useful even if downloads fail midway.
   await store.saveManifest(manifest);
 
-  const wanted = new Set(manifest.documents.map((d) => d.versionId));
+  // A document may hold two PDFs, one per language; both are cached so the panel can be
+  // switched to English with no network.
+  const every = manifest.documents.flatMap(
+    (d) => allFiles(d).map((f) => ({ documentId: d.id, file: f })));
+  const wanted = new Set(every.map((x) => x.file.versionId));
   const present = new Set(await store.listFileIds());
-  const missing = manifest.documents.filter((d) => !present.has(d.versionId));
+  const missing = every.filter((x) => !present.has(x.file.versionId));
 
   onProgress?.({
     status: missing.length ? 'downloading' : 'ok',
     progressDone: 0,
     progressTotal: missing.length,
     manifestVersion: manifest.manifestVersion,
-    message: missing.length ? `Изтегляне на ${missing.length} документа…` : 'Съдържанието е актуално.',
+    message: missing.length ? `Изтегляне на ${missing.length} файла…` : 'Съдържанието е актуално.',
   });
 
   let downloaded = 0;
-  for (const doc of missing) {
+  for (const { documentId, file } of missing) {
     try {
-      const res = await request(conn, doc.fileUrl);
+      const res = await request(conn, file.fileUrl);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const bytes = await res.arrayBuffer();
       await store.putFile({
-        versionId: doc.versionId,
-        documentId: doc.id,
+        versionId: file.versionId,
+        documentId,
         bytes,
         sizeBytes: bytes.byteLength,
-        sha256: doc.sha256,
+        sha256: file.sha256,
         cachedAt: new Date().toISOString(),
       });
       downloaded += 1;
@@ -195,7 +199,13 @@ export async function sync(onProgress?: (s: Partial<SyncState>) => void): Promis
     status: 'ok',
     message:
       downloaded || removed
-        ? `Обновено: +${downloaded} нови, −${removed} премахнати.`
+        ? [
+            downloaded ? `${downloaded} ${downloaded === 1 ? 'нов документ' : 'нови документа'}` : '',
+            removed ? `${removed} ${removed === 1 ? 'премахнат' : 'премахнати'}` : '',
+          ]
+            .filter(Boolean)
+            .join(', ')
+            .replace(/^./, (c) => `Обновено: ${c}`) + '.'
         : 'Съдържанието е актуално.',
     progressDone: downloaded,
     progressTotal: missing.length,

@@ -55,29 +55,56 @@ let bytes = 0;
 let failed = 0;
 const kept = [];
 
+// A document holds up to two PDFs, one per language. Older servers send a single flat
+// file instead; both shapes are handled.
+const filesOf = (doc) => (doc.files
+  ? ['bg', 'en'].filter((l) => doc.files[l]).map((l) => [l, doc.files[l]])
+  : [['bg', { versionId: doc.versionId, sizeBytes: doc.sizeBytes, fileUrl: doc.fileUrl }]]);
+
 for (const doc of manifest.documents) {
   const label = (doc.titleBg || doc.titleEn || doc.id).slice(0, 46);
-  try {
-    const res = await fetch(SERVER + doc.fileUrl, { headers });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const buf = Buffer.from(await res.arrayBuffer());
+  // Each language is fetched separately: one bad file must not cost us the other.
+  const good = {};
+  for (const [lang, file] of filesOf(doc)) {
+    try {
+      const res = await fetch(SERVER + file.fileUrl, { headers });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const buf = Buffer.from(await res.arrayBuffer());
 
-    // A truncated or wrong-typed file would fail silently on the panel, long after
-    // anybody could connect it to this build step. Check it here instead.
-    if (buf.subarray(0, 5).toString('latin1') !== '%PDF-') {
-      throw new Error('not a PDF (bad magic bytes)');
-    }
-    if (doc.sizeBytes && buf.length !== doc.sizeBytes) {
-      throw new Error(`size mismatch: manifest ${doc.sizeBytes}, got ${buf.length}`);
-    }
+      // A truncated or wrong-typed file would fail silently on the panel, long after
+      // anybody could connect it to this build step. Check it here instead.
+      if (buf.subarray(0, 5).toString('latin1') !== '%PDF-') {
+        throw new Error('not a PDF (bad magic bytes)');
+      }
+      if (file.sizeBytes && buf.length !== file.sizeBytes) {
+        throw new Error(`size mismatch: manifest ${file.sizeBytes}, got ${buf.length}`);
+      }
 
-    writeFileSync(join(SEED_DIR, `${doc.versionId}.pdf`), buf);
-    bytes += buf.length;
-    kept.push(doc);
-  } catch (e) {
-    // Ship the bundle without this document rather than embedding a broken file.
-    console.warn(`  !! skipped ${label}: ${e.message}`);
-    failed += 1;
+      writeFileSync(join(SEED_DIR, `${file.versionId}.pdf`), buf);
+      bytes += buf.length;
+      good[lang] = file;
+    } catch (e) {
+      // Ship the bundle without this file rather than embedding a broken one.
+      console.warn(`  !! skipped ${label} [${lang}]: ${e.message}`);
+      failed += 1;
+    }
+  }
+  // Describe only what was actually written, so the panel never lists a language whose
+  // file is not in the bundle.
+  if (good.bg || good.en) {
+    const primary = good.bg || good.en;
+    kept.push({
+      ...doc,
+      files: { bg: good.bg || null, en: good.en || null },
+      language: good.bg && good.en ? 'both' : good.bg ? 'bg' : 'en',
+      versionId: primary.versionId,
+      versionNumber: primary.versionNumber,
+      sha256: primary.sha256,
+      sizeBytes: primary.sizeBytes,
+      pageCount: primary.pageCount,
+      updatedAt: primary.updatedAt,
+      fileUrl: primary.fileUrl,
+    });
   }
 }
 
@@ -93,7 +120,7 @@ const seedManifest = {
 writeFileSync(join(SEED_DIR, 'manifest.json'), JSON.stringify(seedManifest));
 
 console.log(`  embedded ${kept.length} documents, ${(bytes / 1e6).toFixed(1)} MB`);
-if (failed) console.log(`  ${failed} skipped`);
+if (failed) console.log(`  ${failed} files skipped`);
 console.log(`  -> ${SEED_DIR}`);
 
 if (!kept.length) {

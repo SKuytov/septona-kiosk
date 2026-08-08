@@ -14,6 +14,7 @@ import { checkPdf, readBundledPdf, errText } from '../lib/pdfBytes';
 import { SEED_DIAG } from '../lib/seed';
 import type { SeedRejection } from '../lib/seed';
 import { formatBytes } from '../lib/i18n';
+import { allFiles } from '../lib/types';
 
 interface Row {
   label: string;
@@ -80,20 +81,25 @@ export function Diagnostics() {
     let bad = 0;
     let firstBad = '';
     if (manifest) {
+      // A document can hold a Bulgarian and an English PDF; both are checked.
+      let checked = 0;
       for (const d of manifest.documents) {
-        const f = await getFile(d.versionId).catch(() => undefined);
-        const c = checkPdf(f?.bytes, d.sizeBytes);
-        if (!c.ok) {
-          bad++;
-          if (!firstBad) firstBad = `${(d.titleBg || d.titleEn || d.id).slice(0, 30)}: ${f ? c.reason : 'няма файл'}`;
+        for (const file of allFiles(d)) {
+          checked++;
+          const f = await getFile(file.versionId).catch(() => undefined);
+          const c = checkPdf(f?.bytes, file.sizeBytes);
+          if (!c.ok) {
+            bad++;
+            if (!firstBad) firstBad = `${(d.titleBg || d.titleEn || d.id).slice(0, 30)}: ${f ? c.reason : 'няма файл'}`;
+          }
         }
       }
-      push('Проверка на файловете', bad ? `${bad} повредени от ${manifest.documents.length}` : `всички ${manifest.documents.length} са валидни`, bad ? 'bad' : 'ok');
+      push('Проверка на файловете', bad ? `${bad} повредени от ${checked}` : `всички ${checked} са валидни`, bad ? 'bad' : 'ok');
       if (firstBad) push('  първи проблем', firstBad, 'bad');
     }
 
     // ---- can we read the bundled copy at all? -------------------------------
-    const sample = manifest?.documents?.[0];
+    const sample = manifest ? allFiles(manifest.documents[0] ?? ({} as never))[0] : undefined;
     if (sample) {
       const r = await readBundledPdf(sample.versionId, sample.sizeBytes);
       push('Четене от APK', 'bytes' in r ? `ок, ${formatBytes(r.bytes.byteLength)}` : r.error, 'bytes' in r ? 'ok' : 'bad');

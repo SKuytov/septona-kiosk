@@ -66,6 +66,11 @@ CREATE TABLE IF NOT EXISTS categories (
   updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- A document is one policy, held in up to two languages. current_version_bg and
+-- current_version_en are independent chains: a new Bulgarian file does not disturb the
+-- English one, and either may be absent. The language column stays as a stored summary of
+-- which files exist ('bg' | 'en' | 'both'), because the kiosk manifest and the admin
+-- filters read it directly; refreshDocumentLanguage maintains it, nothing else writes it.
 CREATE TABLE IF NOT EXISTS documents (
   id                 TEXT PRIMARY KEY,
   category_id        TEXT NOT NULL REFERENCES categories(id),
@@ -76,6 +81,8 @@ CREATE TABLE IF NOT EXISTS documents (
   sort_order         INTEGER NOT NULL DEFAULT 0,
   pinned             BOOLEAN NOT NULL DEFAULT FALSE,
   current_version_id TEXT,
+  current_version_bg TEXT,
+  current_version_en TEXT,
   deleted_at         TIMESTAMPTZ,
   created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at         TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -86,6 +93,7 @@ CREATE INDEX IF NOT EXISTS documents_live_idx ON documents(deleted_at);
 CREATE TABLE IF NOT EXISTS document_versions (
   id              TEXT PRIMARY KEY,
   document_id     TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+  language        TEXT NOT NULL DEFAULT 'bg' CHECK (language IN ('bg','en')),
   version_number  INTEGER NOT NULL,
   filename        TEXT NOT NULL,
   stored_path     TEXT NOT NULL,
@@ -98,8 +106,7 @@ CREATE TABLE IF NOT EXISTS document_versions (
   converted       BOOLEAN NOT NULL DEFAULT FALSE,
   uploaded_by     TEXT,
   uploaded_by_name TEXT,
-  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-  UNIQUE (document_id, version_number)
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS versions_doc_idx ON document_versions(document_id);
 CREATE INDEX IF NOT EXISTS versions_sha_idx ON document_versions(sha256);
@@ -149,14 +156,75 @@ const DEFAULT_SETTINGS = {
   syncIntervalMinutes: 15,
 };
 
+/*
+ * Brought forward from the single-file model, where a document held one PDF chain and its
+ * own `language` said which language that PDF was in. Every statement is written to be
+ * safe to run again on a database that has already been through it, because install.sh
+ * runs init on every deploy.
+ */
+const MIGRATE = `
+-- 1. Columns, for a database created before the two-slot model existed.
+ALTER TABLE document_versions ADD COLUMN IF NOT EXISTS language TEXT;
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS current_version_bg TEXT;
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS current_version_en TEXT;
+
+-- 2. Each existing version belongs to whatever language its document was filed under.
+--    'both' predates having two slots and in practice always held a Bulgarian file.
+UPDATE document_versions v SET language = CASE WHEN d.language = 'en' THEN 'en' ELSE 'bg' END
+  FROM documents d WHERE d.id = v.document_id AND v.language IS NULL;
+UPDATE document_versions SET language = 'bg' WHERE language IS NULL;
+
+ALTER TABLE document_versions ALTER COLUMN language SET DEFAULT 'bg';
+ALTER TABLE document_versions ALTER COLUMN language SET NOT NULL;
+
+DO $$ BEGIN
+  ALTER TABLE document_versions ADD CONSTRAINT document_versions_language_check
+    CHECK (language IN ('bg','en'));
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+-- 3. Version numbers now run per language, so the old whole-document constraint is wrong.
+ALTER TABLE document_versions DROP CONSTRAINT IF EXISTS document_versions_document_id_version_number_key;
+
+-- 4. One chain of version numbers per language, now that the column exists.
+CREATE UNIQUE INDEX IF NOT EXISTS versions_chain_idx
+  ON document_versions(document_id, language, version_number);
+
+-- 5. Point the matching slot at whatever was current.
+UPDATE documents d SET current_version_bg = d.current_version_id
+  FROM document_versions v
+  WHERE v.id = d.current_version_id AND v.language = 'bg' AND d.current_version_bg IS NULL;
+UPDATE documents d SET current_version_en = d.current_version_id
+  FROM document_versions v
+  WHERE v.id = d.current_version_id AND v.language = 'en' AND d.current_version_en IS NULL;
+`;
+
 async function init() {
   await q(SCHEMA);
+  await q(MIGRATE);
   for (const [key, value] of Object.entries(DEFAULT_SETTINGS)) {
     await q(
       'INSERT INTO settings (key, value) VALUES ($1,$2) ON CONFLICT (key) DO NOTHING',
       [key, JSON.stringify(value)]
     );
   }
+}
+
+/*
+ * `documents.language` is a summary of which files actually exist, so it is recomputed
+ * from the two slots rather than trusted. Anything that adds, replaces or removes a file
+ * calls this; nothing else may write the column.
+ */
+async function refreshDocumentLanguage(client, documentId) {
+  const runner = client || { query: q };
+  const { rows } = await runner.query(
+    `UPDATE documents SET language = CASE
+        WHEN current_version_bg IS NOT NULL AND current_version_en IS NOT NULL THEN 'both'
+        WHEN current_version_en IS NOT NULL THEN 'en'
+        ELSE 'bg' END,
+      updated_at = now()
+     WHERE id = $1 RETURNING language`,
+    [documentId]);
+  return rows[0] ? rows[0].language : null;
 }
 
 /** Bump the manifest version so every kiosk notices there is new content. */
@@ -177,4 +245,6 @@ async function getSettings() {
   return out;
 }
 
-module.exports = { pool, q, tx, init, bumpManifest, getSettings, DEFAULT_SETTINGS };
+module.exports = {
+  pool, q, tx, init, bumpManifest, getSettings, refreshDocumentLanguage, DEFAULT_SETTINGS,
+};

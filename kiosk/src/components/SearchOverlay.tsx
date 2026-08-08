@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from './Icon';
+import { Keys } from './Keys';
 import { DocCard } from './DocCard';
 import { t, plural } from '../lib/i18n';
-import { docTitle, matchesLang } from '../lib/types';
+import { docTitle, matchesLang, docFile } from '../lib/types';
 import type { Category, Doc, Lang } from '../lib/types';
 
 interface Props {
@@ -23,7 +24,15 @@ export function SearchOverlay({
   docs, categories, lang, cachedIds, onOpen, onClose, onActivity,
 }: Props) {
   const [query, setQuery] = useState('');
+  const [layout, setLayout] = useState<'bg' | 'en'>(lang === 'en' ? 'en' : 'bg');
   const inputRef = useRef<HTMLInputElement>(null);
+
+  /** Type into the field itself rather than into a shadow value, so the caret stays real. */
+  const press = (character: string) => {
+    setQuery((q) => (q.length >= 60 ? q : q + character));
+    onActivity();
+    inputRef.current?.focus();
+  };
   const catById = useMemo(() => new Map(categories.map((c) => [c.id, c])), [categories]);
 
   useEffect(() => {
@@ -91,7 +100,12 @@ export function SearchOverlay({
             autoComplete="off"
             autoCorrect="off"
             spellCheck={false}
-            inputMode="search"
+            inputMode="none"
+            readOnly={false}
+            onFocus={(e) => {
+              // `inputMode="none"` keeps the system keyboard away; the caret still works.
+              e.currentTarget.setAttribute('inputmode', 'none');
+            }}
           />
         </div>
         <button className="srch__x" onClick={onClose} aria-label={t(lang, 'close')}>
@@ -99,7 +113,7 @@ export function SearchOverlay({
         </button>
       </div>
 
-      <div className="srch__body">
+      <div className="srch__body srch__body--keys">
         {showHint ? (
           <div className="empty">
             <span className="empty__ic" style={{ background: 'rgba(255,255,255,.14)', color: '#fff' }}>
@@ -128,7 +142,7 @@ export function SearchOverlay({
                   doc={d}
                   lang={lang}
                   category={catById.get(d.categoryId)}
-                  cached={cachedIds.has(d.versionId)}
+                  cached={cachedIds.has(docFile(d, lang)?.versionId ?? '')}
                   highlight={query}
                   showCategory
                   onOpen={onOpen}
@@ -138,6 +152,22 @@ export function SearchOverlay({
           </>
         )}
       </div>
+
+      <Keys
+        lang={lang}
+        layout={layout}
+        onLayout={setLayout}
+        onKey={press}
+        onBackspace={() => {
+          setQuery((q) => q.slice(0, -1));
+          onActivity();
+        }}
+        onClear={() => {
+          setQuery('');
+          onActivity();
+        }}
+        onClose={onClose}
+      />
     </div>
   );
 }

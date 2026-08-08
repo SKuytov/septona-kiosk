@@ -1333,3 +1333,64 @@ mark { background: #fde68a; color: var(--sep-ink); border-radius: 3px; padding: 
    sheets clear. `visibility` rather than `display`, so nothing is relaid out and the canvas
    keeps its backing store. */
 .vw__stagewrap--turning .vw__stage { visibility: hidden; }
+
+/* ---------------------------------------------------------------------------
+   The on-screen keyboard.
+
+   Key size is set for a finger on a wall panel rather than a mouse: 84px tall,
+   which on the 1080px-wide portrait screens is a little over 14mm — comfortably
+   above the 9mm that a gloved hand needs. The whole block is a fixed height so
+   the results above it never jump as the query changes.
+   --------------------------------------------------------------------------- */
+.kb {
+  flex: 0 0 auto;
+  display: grid;
+  gap: 10px;
+  padding: 16px 14px calc(16px + env(safe-area-inset-bottom, 0px));
+  background: rgba(9, 13, 30, 0.92);
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.kb__row { display: flex; gap: 8px; justify-content: center; }
+
+.kb__k {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 84px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  font-size: 1.55rem;
+  font-weight: 500;
+  display: grid;
+  place-items: center;
+  /* No tap highlight, no text selection: this is a key, not a link. */
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+  transition: background 0.09s ease, transform 0.09s ease;
+}
+
+.kb__k:active {
+  background: var(--sep-blue);
+  border-color: var(--sep-blue);
+  transform: translateY(2px);
+}
+
+.kb__k--num { height: 68px; font-size: 1.3rem; color: rgba(255, 255, 255, 0.82); }
+.kb__k--wide { flex: 1.6 1 0; }
+.kb__k--alt { font-size: 1.05rem; letter-spacing: 0.04em; }
+.kb__k--util { flex: 1.5 1 0; font-size: 1.05rem; }
+.kb__k--done { background: var(--sep-blue); border-color: var(--sep-blue); font-weight: 600; }
+.kb__k--space { flex: 4 1 0; }
+.kb__spaceline { display: block; width: 46%; height: 3px; border-radius: 2px; background: rgba(255, 255, 255, 0.5); }
+
+/* Results share the screen with the keys, so they scroll in what is left. */
+.srch__body--keys { padding-bottom: 20px; }
+
+/* On a landscape screen the keys would eat the results; shrink them there. */
+@media (orientation: landscape) and (max-height: 900px) {
+  .kb { gap: 7px; padding: 10px 12px; }
+  .kb__k { height: 58px; font-size: 1.25rem; }
+  .kb__k--num { height: 48px; font-size: 1.05rem; }
+}

@@ -23,7 +23,7 @@ import { checkPdf, readBundledPdf, errText } from '../lib/pdfBytes';
 import { useZoomPan } from '../lib/useZoomPan';
 import { createPageTurn, type Axis, type Dir, type PageTurn } from '../lib/pageTurn';
 import { t, formatDate } from '../lib/i18n';
-import { docTitle } from '../lib/types';
+import { docTitle, docFile } from '../lib/types';
 import type { Doc, Lang } from '../lib/types';
 
 type FitMode = 'width' | 'page' | 'custom';
@@ -167,25 +167,30 @@ export function PdfViewer({
 
     (async () => {
       try {
-        const cached = await getFile(doc.versionId);
+        // The Bulgarian and the English edition are separate PDFs; open the one for the
+        // language on screen, and fall back to the other so a language switch inside an
+        // open document never lands on a blank viewer.
+        const chosen = docFile(doc, lang) ?? docFile(doc, lang === 'bg' ? 'en' : 'bg');
+        if (!chosen) throw new Error('няма файл за този документ');
+        const cached = await getFile(chosen.versionId);
         let bytes = cached?.bytes ?? null;
         let why: string | null = null;
 
         // Never hand pdf.js a stream we have not checked. Cached bytes can be short if they
         // were stored by an older build that did not validate on import.
-        const check = checkPdf(bytes, doc.sizeBytes);
+        const check = checkPdf(bytes, chosen.sizeBytes);
         if (!check.ok) {
           why = check.reason ?? null;
           // Self-repair: re-read the copy bundled in the app and replace the bad entry.
-          const reread = await readBundledPdf(doc.versionId, doc.sizeBytes);
+          const reread = await readBundledPdf(chosen.versionId, chosen.sizeBytes);
           if ('bytes' in reread) {
             bytes = reread.bytes;
             await putFile({
-              versionId: doc.versionId,
+              versionId: chosen.versionId,
               documentId: doc.id,
               bytes: reread.bytes,
               sizeBytes: reread.bytes.byteLength,
-              sha256: doc.sha256,
+              sha256: chosen.sha256,
               cachedAt: new Date().toISOString(),
             }).catch(() => {}); // A read-only store must not block viewing.
             why = null;
@@ -244,7 +249,8 @@ export function PdfViewer({
       pdfRef.current?.destroy();
       pdfRef.current = null;
     };
-  }, [doc.versionId, lang]);
+    // Re-running on a language change is deliberate: the other language is a different PDF.
+  }, [doc.id, docFile(doc, lang)?.versionId, lang]);
 
   /*
     Centres the page by padding the stage rather than by centring a flex item.

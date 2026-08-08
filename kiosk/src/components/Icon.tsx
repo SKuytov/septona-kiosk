@@ -20,6 +20,7 @@ const PATHS: Record<string, string> = {
   chevronLeft: 'M15 18l-6-6 6-6',
   chevronRight: 'M9 18l6-6-6-6',
   x: 'M18 6L6 18M6 6l12 12',
+  backspace: 'M21 4H8.5a2 2 0 0 0-1.6.8L2 12l4.9 7.2a2 2 0 0 0 1.6.8H21a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2zM18 9l-6 6M12 9l6 6',
   refresh: 'M23 4v6h-6M1 20v-6h6M20.5 9a9 9 0 0 0-14.9-3.4L1 10M23 14l-4.6 4.4A9 9 0 0 1 3.5 15',
   plus: 'M12 5v14M5 12h14',
   minus: 'M5 12h14',

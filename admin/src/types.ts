@@ -4,8 +4,11 @@ export type Language = 'bg' | 'en' | 'both'
 export interface User { id: string; email: string; name: string; role: Role; createdAt?: string }
 export interface Category { id: string; slug?: string; nameBg: string; nameEn: string; icon: IconName; colour: string; sortOrder: number; visible: boolean; parentId: string | null; documentCount?: number }
 export type IconName = 'exit' | 'policy' | 'pin' | 'book' | 'shield' | 'fire' | 'doc' | 'people' | 'leaf' | 'factory' | 'phone' | 'clipboard'
-export interface Version { id: string; versionNumber?: number; createdAt?: string; uploadedAt?: string; uploaderName?: string; uploader?: User; note?: string | null; sizeBytes?: number; sourceFile?: string }
-export interface Document { id: string; categoryId: string; titleBg: string; titleEn: string; language: Language; tags: string[]; sortOrder: number; pinned: boolean; versionId: string; versionNumber: number; sha256?: string; sizeBytes: number; pageCount?: number; updatedAt: string; deletedAt?: string | null; fileUrl?: string; versions?: Version[] }
+export interface Version { id: string; language?: 'bg' | 'en'; versionNumber?: number; createdAt?: string; uploadedAt?: string; uploaderName?: string; uploader?: User; note?: string | null; sizeBytes?: number; sourceFile?: string }
+/** One PDF: the Bulgarian or the English edition of a document. */
+export interface DocFile { versionId: string; versionNumber: number; sizeBytes: number; pageCount?: number | null; sha256?: string; filename?: string; updatedAt?: string }
+
+export interface Document { id: string; files?: { bg: DocFile | null; en: DocFile | null }; categoryId: string; titleBg: string; titleEn: string; language: Language; tags: string[]; sortOrder: number; pinned: boolean; versionId: string; versionNumber: number; sha256?: string; sizeBytes: number; pageCount?: number; updatedAt: string; deletedAt?: string | null; fileUrl?: string; versions?: Version[] }
 export interface AuditEntry { id: number | string; at: string; actorType: 'user' | 'device' | 'system'; actorId?: string; actorName?: string; action: string; entity: string; entityId: string; summary: string; before: unknown; after: unknown; ip?: string }
 export interface Device { id: string; name?: string; label?: string; location?: string | null; keyPrefix?: string; revoked?: boolean; lastManifestVersion?: number | null; createdAt?: string; lastSeenAt?: string | null; appVersion?: string; manifestVersion?: number; docsCached?: number; storageBytes?: number; revokedAt?: string | null; key?: string }
 export interface Settings { kioskTitle: string; defaultLanguage: 'bg' | 'en'; homeAfterIdleSeconds: number; syncIntervalMinutes: number }

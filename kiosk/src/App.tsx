@@ -19,7 +19,7 @@ const PdfViewer = lazy(() => loadViewer().then((m) => ({ default: m.PdfViewer })
 import { PinPad, ServiceScreen } from './components/ServiceScreen';
 import { HomeScreen } from './components/HomeScreen';
 import { t, plural, formatDate } from './lib/i18n';
-import { catName, matchesLang, DEFAULT_SETTINGS } from './lib/types';
+import { catName, matchesLang, docFile, DEFAULT_SETTINGS } from './lib/types';
 import type { Doc, Lang, Manifest, SyncState } from './lib/types';
 import { emptyState, getConnection, getLastSync, sync as runSync } from './lib/sync';
 import { listFileIds, loadManifest, metaGet, metaSet, requestPersistence } from './lib/store';
@@ -528,7 +528,7 @@ export default function App() {
                     doc={d}
                     lang={lang}
                     category={current ?? undefined}
-                    cached={cachedIds.has(d.versionId)}
+                    cached={cachedIds.has(docFile(d, lang)?.versionId ?? '')}
                     row
                     selected={d.id === lastReadId}
                     onOpen={(doc) => { setOpenDoc(doc); setLastReadId(doc.id); noteActivity(); }}

@@ -1,7 +1,7 @@
 'use strict';
 const express = require('express');
 const multer = require('multer');
-const { q, tx, bumpManifest } = require('../db');
+const { q, tx, bumpManifest, refreshDocumentLanguage } = require('../db');
 const { audit } = require('../audit');
 const { requireRole } = require('../auth');
 const { id, slugify, httpError, asyncH, pdfPageCount } = require('../util');
@@ -17,20 +17,42 @@ const catOut = (r) => ({
 });
 
 const verOut = (r) => ({
-  id: r.id, versionNumber: r.version_number, filename: r.filename, sha256: r.sha256,
+  id: r.id, language: r.language, versionNumber: r.version_number,
+  filename: r.filename, sha256: r.sha256,
   sizeBytes: Number(r.size_bytes), pageCount: r.page_count, note: r.note,
   sourceFilename: r.source_filename, converted: r.converted,
   uploadedBy: r.uploaded_by, uploadedByName: r.uploaded_by_name, createdAt: r.created_at,
 });
 
-const docOut = (r) => ({
-  id: r.id, categoryId: r.category_id, titleBg: r.title_bg, titleEn: r.title_en,
-  language: r.language, tags: r.tags || [], sortOrder: r.sort_order, pinned: r.pinned,
-  versionId: r.current_version_id, versionNumber: r.version_number,
-  sizeBytes: r.size_bytes != null ? Number(r.size_bytes) : null,
-  pageCount: r.page_count, sha256: r.sha256,
-  createdAt: r.created_at, updatedAt: r.updated_at, deletedAt: r.deleted_at,
-});
+/* One file per language, each with its own current version. `files.bg` or `files.en` is
+ * null when that language has not been uploaded. The flat `versionId` / `versionNumber`
+ * fields describe whichever language is present, preferring Bulgarian, so older callers
+ * and the document list keep working unchanged. */
+const slot = (r, lang) => (r[`${lang}_ver_id`] ? {
+  versionId: r[`${lang}_ver_id`],
+  versionNumber: r[`${lang}_version_number`],
+  sizeBytes: r[`${lang}_size_bytes`] != null ? Number(r[`${lang}_size_bytes`]) : null,
+  pageCount: r[`${lang}_page_count`],
+  sha256: r[`${lang}_sha256`],
+  filename: r[`${lang}_filename`],
+  updatedAt: r[`${lang}_created_at`],
+} : null);
+
+const docOut = (r) => {
+  const files = { bg: slot(r, 'bg'), en: slot(r, 'en') };
+  const primary = files.bg || files.en;
+  return {
+    id: r.id, categoryId: r.category_id, titleBg: r.title_bg, titleEn: r.title_en,
+    language: r.language, tags: r.tags || [], sortOrder: r.sort_order, pinned: r.pinned,
+    files,
+    versionId: primary ? primary.versionId : null,
+    versionNumber: primary ? primary.versionNumber : null,
+    sizeBytes: primary ? primary.sizeBytes : null,
+    pageCount: primary ? primary.pageCount : null,
+    sha256: primary ? primary.sha256 : null,
+    createdAt: r.created_at, updatedAt: r.updated_at, deletedAt: r.deleted_at,
+  };
+};
 
 // ---------------------------------------------------------------- categories
 
@@ -125,8 +147,16 @@ router.delete('/categories/:catId', requireRole('admin'), asyncH(async (req, res
 // ----------------------------------------------------------------- documents
 
 const DOC_SELECT = `
-  SELECT d.*, v.version_number, v.size_bytes, v.page_count, v.sha256
-  FROM documents d LEFT JOIN document_versions v ON v.id = d.current_version_id`;
+  SELECT d.*,
+    b.id AS bg_ver_id, b.version_number AS bg_version_number, b.size_bytes AS bg_size_bytes,
+    b.page_count AS bg_page_count, b.sha256 AS bg_sha256, b.filename AS bg_filename,
+    b.created_at AS bg_created_at,
+    e.id AS en_ver_id, e.version_number AS en_version_number, e.size_bytes AS en_size_bytes,
+    e.page_count AS en_page_count, e.sha256 AS en_sha256, e.filename AS en_filename,
+    e.created_at AS en_created_at
+  FROM documents d
+  LEFT JOIN document_versions b ON b.id = d.current_version_bg
+  LEFT JOIN document_versions e ON e.id = d.current_version_en`;
 
 router.get('/documents', requireRole('viewer'), asyncH(async (req, res) => {
   /*
@@ -145,7 +175,12 @@ router.get('/documents', requireRole('viewer'), asyncH(async (req, res) => {
   const vals = [];
   if (req.query.categoryId) { vals.push(req.query.categoryId); where.push(`d.category_id = $${vals.length}`); }
   if (req.query.language && req.query.language !== 'all') {
-    vals.push(req.query.language); where.push(`(d.language = $${vals.length} OR d.language = 'both')`);
+    // Filter on the files that exist, not on a label: a document counts as English when
+    // it actually has an English PDF.
+    where.push(req.query.language === 'en' ? 'd.current_version_en IS NOT NULL'
+      : req.query.language === 'both'
+        ? 'd.current_version_bg IS NOT NULL AND d.current_version_en IS NOT NULL'
+        : 'd.current_version_bg IS NOT NULL');
   }
   if (req.query.q) {
     vals.push(`%${req.query.q}%`);
@@ -166,8 +201,8 @@ router.get('/documents/:docId', requireRole('viewer'), asyncH(async (req, res) =
   const { rows } = await q(`${DOC_SELECT} WHERE d.id = $1`, [req.params.docId]);
   if (!rows.length) throw httpError(404, 'NOT_FOUND', 'Документът не е намерен.');
   const { rows: versions } = await q(
-    'SELECT * FROM document_versions WHERE document_id = $1 ORDER BY version_number DESC',
-    [req.params.docId]);
+    `SELECT * FROM document_versions WHERE document_id = $1
+     ORDER BY language, version_number DESC`, [req.params.docId]);
   res.json({ document: { ...docOut(rows[0]), versions: versions.map(verOut) } });
 }));
 
@@ -176,58 +211,96 @@ function parseMeta(req) {
   catch { throw httpError(400, 'BAD_META', 'Полето meta не е валиден JSON.'); }
 }
 
+/** The language a request is talking about. Bulgarian unless it says otherwise. */
+function wantedLanguage(req) {
+  const raw = (req.query.language || req.body?.language
+    || (() => { try { return JSON.parse(req.body?.meta || '{}').language; } catch { return null; } })()
+    || 'bg').toString().toLowerCase();
+  if (raw !== 'bg' && raw !== 'en')
+    throw httpError(400, 'BAD_LANGUAGE', 'Езикът трябва да е bg или en.');
+  return raw;
+}
+
 /** Shared: validate + persist an uploaded file as a new version row. */
-async function ingest(req, client, documentId, versionNumber, note) {
-  if (!req.file) throw httpError(400, 'NO_FILE', 'Не е приложен файл.');
+async function ingest(req, client, documentId, versionNumber, note, language, file) {
+  const src = file || req.file;
+  if (!src) throw httpError(400, 'NO_FILE', 'Не е приложен файл.');
   // Uploads through the interface are PDF-only, deliberately: a Word file converted on
   // the server is a different document from the one the author approved, and nobody
   // would notice the difference until it was on a wall. The converter stays available to
   // the one-off archive importer only.
   const { buffer, converted } = await storage.toPdfBuffer(
-    req.file.buffer, req.file.originalname, false);
+    src.buffer, src.originalname, false);
 
   if (req.query.allowDuplicate !== 'true') {
     const hash = require('../util').sha256(buffer);
     const { rows: dup } = await client.query(
       `SELECT v.document_id, d.title_bg FROM document_versions v
        JOIN documents d ON d.id = v.document_id
-       WHERE v.sha256 = $1 AND d.deleted_at IS NULL AND v.id = d.current_version_id
+       WHERE v.sha256 = $1 AND d.deleted_at IS NULL
+       AND v.id IN (d.current_version_bg, d.current_version_en)
        AND v.document_id <> $2 LIMIT 1`, [hash, documentId]);
     if (dup.length)
+      // Two files can arrive together, so say which one is the problem.
       throw httpError(409, 'DUPLICATE_CONTENT',
-        `Идентичен файл вече съществува като «${dup[0].title_bg}».`);
+        `${language === 'en' ? 'Английският' : 'Българският'} файл е идентичен с вече` +
+        ` качен документ «${dup[0].title_bg}».`);
   }
 
   const { hash, storedPath, sizeBytes } = storage.store(buffer);
   const versionId = id('ver');
   await client.query(
     `INSERT INTO document_versions
-     (id,document_id,version_number,filename,stored_path,sha256,size_bytes,mime,page_count,note,source_filename,converted,uploaded_by,uploaded_by_name)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,'application/pdf',$8,$9,$10,$11,$12,$13)`,
-    [versionId, documentId, versionNumber, req.file.originalname.replace(/\.[^.]+$/, '') + '.pdf',
+     (id,document_id,language,version_number,filename,stored_path,sha256,size_bytes,mime,page_count,note,source_filename,converted,uploaded_by,uploaded_by_name)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'application/pdf',$9,$10,$11,$12,$13,$14)`,
+    [versionId, documentId, language, versionNumber,
+     src.originalname.replace(/\.[^.]+$/, '') + '.pdf',
      storedPath, hash, sizeBytes, pdfPageCount(buffer), note || null,
-     converted ? req.file.originalname : null, converted,
+     converted ? src.originalname : null, converted,
      req.user?.id || null, req.user?.name || null]
   );
   return { versionId, sizeBytes };
 }
 
-router.post('/documents', requireRole('editor'), upload.single('file'), asyncH(async (req, res) => {
+/* A document can be created with its Bulgarian file, its English file, or both at once —
+ * a policy that exists in two languages should not have to be entered twice. `file` on its
+ * own is still accepted, and lands in the slot named by `language`. */
+const createUpload = upload.fields([
+  { name: 'file', maxCount: 1 }, { name: 'fileBg', maxCount: 1 }, { name: 'fileEn', maxCount: 1 },
+]);
+
+router.post('/documents', requireRole('editor'), createUpload, asyncH(async (req, res) => {
   const meta = parseMeta(req);
   if (!meta.categoryId) throw httpError(400, 'CATEGORY_REQUIRED', 'Изберете категория.');
   const { rows: cat } = await q('SELECT 1 FROM categories WHERE id = $1', [meta.categoryId]);
   if (!cat.length) throw httpError(400, 'BAD_CATEGORY', 'Категорията не съществува.');
 
+  const picked = [];
+  if (req.files?.fileBg?.[0]) picked.push(['bg', req.files.fileBg[0]]);
+  if (req.files?.fileEn?.[0]) picked.push(['en', req.files.fileEn[0]]);
+  if (!picked.length && req.files?.file?.[0])
+    picked.push([wantedLanguage(req), req.files.file[0]]);
+  if (!picked.length) throw httpError(400, 'NO_FILE', 'Приложете поне един PDF файл.');
+
   const docId = id('doc');
-  const titleBg = (meta.titleBg || req.file?.originalname?.replace(/\.[^.]+$/, '') || 'Без име').trim();
+  const titleBg = (meta.titleBg || picked[0][1].originalname.replace(/\.[^.]+$/, '')
+    || 'Без име').trim();
   const out = await tx(async (c) => {
     await c.query(
       `INSERT INTO documents (id,category_id,title_bg,title_en,language,tags,sort_order,pinned)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-      [docId, meta.categoryId, titleBg, meta.titleEn || '', meta.language || 'bg',
+      [docId, meta.categoryId, titleBg, meta.titleEn || '', picked[0][0],
        meta.tags || [], meta.sortOrder ?? 999, !!meta.pinned]);
-    const { versionId } = await ingest(req, c, docId, 1, meta.note || 'Първоначално качване');
-    await c.query('UPDATE documents SET current_version_id = $1 WHERE id = $2', [versionId, docId]);
+    for (const [lang, file] of picked) {
+      // eslint-disable-next-line no-await-in-loop
+      const { versionId } = await ingest(
+        req, c, docId, 1, meta.note || 'Първоначално качване', lang, file);
+      // eslint-disable-next-line no-await-in-loop
+      await c.query(
+        `UPDATE documents SET current_version_${lang} = $1, current_version_id =
+           COALESCE(current_version_id, $1) WHERE id = $2`, [versionId, docId]);
+    }
+    await refreshDocumentLanguage(c, docId);
     await bumpManifest(c);
     const { rows } = await c.query(`${DOC_SELECT} WHERE d.id = $1`, [docId]);
     return rows[0];
@@ -259,20 +332,29 @@ router.post('/documents/:docId/versions', requireRole('editor'), upload.single('
   asyncH(async (req, res) => {
     const { rows: cur } = await q('SELECT * FROM documents WHERE id = $1', [req.params.docId]);
     if (!cur.length) throw httpError(404, 'NOT_FOUND', 'Документът не е намерен.');
+    // Each language keeps its own run of version numbers, so adding an English file does
+    // not renumber the Bulgarian one or disturb what the panels have cached.
+    const lang = wantedLanguage(req);
     const { rows: [{ max }] } = await q(
-      'SELECT COALESCE(MAX(version_number),0) AS max FROM document_versions WHERE document_id = $1',
-      [req.params.docId]);
+      `SELECT COALESCE(MAX(version_number),0) AS max FROM document_versions
+       WHERE document_id = $1 AND language = $2`, [req.params.docId, lang]);
     const next = Number(max) + 1;
     await tx(async (c) => {
-      const { versionId } = await ingest(req, c, req.params.docId, next, req.body?.note);
-      await c.query('UPDATE documents SET current_version_id = $1, updated_at = now() WHERE id = $2',
+      const { versionId } = await ingest(req, c, req.params.docId, next, req.body?.note, lang);
+      await c.query(
+        `UPDATE documents SET current_version_${lang} = $1, updated_at = now() WHERE id = $2`,
         [versionId, req.params.docId]);
+      await refreshDocumentLanguage(c, req.params.docId);
       await bumpManifest(c);
     });
     const { rows } = await q(`${DOC_SELECT} WHERE d.id = $1`, [req.params.docId]);
+    const langName = lang === 'en' ? 'английската' : 'българската';
     await audit(req, { action: 'document.version.create', entity: 'document', entityId: req.params.docId,
-      summary: `Качена версия ${next} на «${cur[0].title_bg}»`,
-      before: { versionNumber: next - 1 }, after: { versionNumber: next, note: req.body?.note || null } });
+      summary: next === 1
+        ? `Качен ${lang === 'en' ? 'английски' : 'български'} файл към «${cur[0].title_bg}»`
+        : `Качена версия ${next} на ${langName} версия на «${cur[0].title_bg}»`,
+      before: { language: lang, versionNumber: next - 1 },
+      after: { language: lang, versionNumber: next, note: req.body?.note || null } });
     res.status(201).json({ document: docOut(rows[0]) });
   }));
 
@@ -283,17 +365,126 @@ router.post('/documents/:docId/versions/:versionId/restore', requireRole('editor
       [req.params.versionId, req.params.docId]);
     if (!v.length) throw httpError(404, 'NOT_FOUND', 'Версията не е намерена.');
     const { rows: cur } = await q(`${DOC_SELECT} WHERE d.id = $1`, [req.params.docId]);
+    // A restore only moves the chain the version belongs to; the other language is untouched.
+    const lang = v[0].language;
+    const wasNumber = cur[0][`${lang}_version_number`];
     await tx(async (c) => {
-      await c.query('UPDATE documents SET current_version_id = $1, updated_at = now() WHERE id = $2',
+      await c.query(
+        `UPDATE documents SET current_version_${lang} = $1, updated_at = now() WHERE id = $2`,
         [req.params.versionId, req.params.docId]);
+      await refreshDocumentLanguage(c, req.params.docId);
       await bumpManifest(c);
     });
+    const langName = lang === 'en' ? 'английската' : 'българската';
     await audit(req, { action: 'document.version.restore', entity: 'document', entityId: req.params.docId,
-      summary: `Възстановена версия ${v[0].version_number} на «${cur[0].title_bg}»`,
-      before: { versionNumber: cur[0].version_number }, after: { versionNumber: v[0].version_number } });
+      summary: `Възстановена версия ${v[0].version_number} на ${langName} версия на «${cur[0].title_bg}»`,
+      before: { language: lang, versionNumber: wasNumber },
+      after: { language: lang, versionNumber: v[0].version_number } });
     const { rows } = await q(`${DOC_SELECT} WHERE d.id = $1`, [req.params.docId]);
     res.json({ document: docOut(rows[0]) });
   }));
+
+/**
+ * Attach another document as this one's missing language.
+ *
+ * Before a document could hold two files, a policy published in both languages had to be
+ * entered twice. This joins the two records: the other record's files move into the free
+ * slot here, keeping their history, and that record is archived. It is also how a pair the
+ * automatic merge would not risk guessing gets joined by hand.
+ */
+router.post('/documents/:docId/link-language', requireRole('editor'), asyncH(async (req, res) => {
+  const sourceId = req.body?.sourceDocumentId;
+  if (!sourceId) throw httpError(400, 'SOURCE_REQUIRED', 'Изберете документ за свързване.');
+  if (sourceId === req.params.docId)
+    throw httpError(400, 'SAME_DOCUMENT', 'Документът не може да се свърже със себе си.');
+
+  const { rows: [target] } = await q(`${DOC_SELECT} WHERE d.id = $1 AND d.deleted_at IS NULL`,
+    [req.params.docId]);
+  if (!target) throw httpError(404, 'NOT_FOUND', 'Документът не е намерен.');
+  // The free slot decides which language the source has to bring, so check it before
+  // going looking for the source at all.
+  const lang = !target.bg_ver_id ? 'bg' : !target.en_ver_id ? 'en' : null;
+  if (!lang)
+    throw httpError(409, 'BOTH_PRESENT',
+      'Документът вече има файлове и на двата езика. Изтрийте единия, за да свържете друг.');
+
+  const { rows: [source] } = await q(`${DOC_SELECT} WHERE d.id = $1 AND d.deleted_at IS NULL`,
+    [sourceId]);
+  if (!source) throw httpError(404, 'SOURCE_NOT_FOUND', 'Свързваният документ не е намерен.');
+  if (!source[`${lang}_ver_id`])
+    throw httpError(409, 'WRONG_LANGUAGE',
+      `Избраният документ няма ${lang === 'en' ? 'английски' : 'български'} файл.`);
+  if (source[lang === 'bg' ? 'en_ver_id' : 'bg_ver_id'])
+    throw httpError(409, 'SOURCE_HAS_BOTH',
+      'Избраният документ има файлове и на двата езика и не може да бъде присъединен.');
+
+  await tx(async (c) => {
+    // Move the version history across; it is already the only chain of its language there,
+    // so the numbering carries over untouched.
+    await c.query(
+      'UPDATE document_versions SET document_id = $1 WHERE document_id = $2 AND language = $3',
+      [req.params.docId, sourceId, lang]);
+    await c.query(
+      `UPDATE documents SET current_version_${lang} = $1, updated_at = now(),
+         title_en = CASE WHEN title_en = '' THEN $2 ELSE title_en END
+       WHERE id = $3`,
+      [source[`${lang}_ver_id`], source.title_en || target.title_en || '', req.params.docId]);
+    await refreshDocumentLanguage(c, req.params.docId);
+    await c.query(
+      `UPDATE documents SET deleted_at = now(), current_version_${lang} = NULL WHERE id = $1`,
+      [sourceId]);
+    await bumpManifest(c);
+  });
+
+  const { rows } = await q(`${DOC_SELECT} WHERE d.id = $1`, [req.params.docId]);
+  await audit(req, { action: 'document.link_language', entity: 'document',
+    entityId: req.params.docId,
+    summary: `«${source.title_bg}» беше присъединен като `
+      + `${lang === 'en' ? 'английска' : 'българска'} версия на «${target.title_bg}»`,
+    before: { linkedDocumentId: sourceId, title: source.title_bg },
+    after: docOut(rows[0]) });
+  res.json({ document: docOut(rows[0]) });
+}));
+
+/**
+ * Detach one language back into a document of its own — the way back out of a link or an
+ * automatic merge that paired the wrong two records.
+ */
+router.post('/documents/:docId/unlink-language', requireRole('editor'), asyncH(async (req, res) => {
+  const lang = wantedLanguage(req);
+  const { rows: [doc] } = await q(`${DOC_SELECT} WHERE d.id = $1`, [req.params.docId]);
+  if (!doc) throw httpError(404, 'NOT_FOUND', 'Документът не е намерен.');
+  if (!doc.bg_ver_id || !doc.en_ver_id)
+    throw httpError(409, 'NOT_PAIRED', 'Документът има файл само на един език.');
+
+  const newId = id('doc');
+  await tx(async (c) => {
+    await c.query(
+      `INSERT INTO documents (id,category_id,title_bg,title_en,language,tags,sort_order,pinned)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [newId, doc.category_id, doc.title_bg, doc.title_en, lang, doc.tags || [],
+       doc.sort_order, doc.pinned]);
+    await c.query(
+      'UPDATE document_versions SET document_id = $1 WHERE document_id = $2 AND language = $3',
+      [newId, req.params.docId, lang]);
+    await c.query(`UPDATE documents SET current_version_${lang} = $1 WHERE id = $2`,
+      [doc[`${lang}_ver_id`], newId]);
+    await c.query(
+      `UPDATE documents SET current_version_${lang} = NULL, updated_at = now() WHERE id = $1`,
+      [req.params.docId]);
+    await refreshDocumentLanguage(c, req.params.docId);
+    await refreshDocumentLanguage(c, newId);
+    await bumpManifest(c);
+  });
+
+  const { rows } = await q(`${DOC_SELECT} WHERE d.id = $1`, [req.params.docId]);
+  await audit(req, { action: 'document.unlink_language', entity: 'document',
+    entityId: req.params.docId,
+    summary: `${lang === 'en' ? 'Английската' : 'Българската'} версия на «${doc.title_bg}» `
+      + 'беше отделена в самостоятелен документ',
+    after: { newDocumentId: newId, language: lang } });
+  res.json({ document: docOut(rows[0]), newDocumentId: newId });
+}));
 
 /**
  * Two different operations behind one verb, and the difference matters:
@@ -373,8 +564,12 @@ router.get('/documents/:docId/versions/:versionId/file', requireRole('viewer'),
       [req.params.versionId, req.params.docId]);
     if (!rows.length || !storage.existsStored(rows[0].stored_path))
       throw httpError(404, 'NOT_FOUND', 'Файлът не е намерен.');
+    // Any version, current or historical, and either shown in the browser or saved to
+    // disk — asking for an old copy should not mean restoring it first.
+    const how = req.query.download === '1' ? 'attachment' : 'inline';
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(rows[0].filename)}`);
+    res.setHeader('Content-Disposition',
+      `${how}; filename*=UTF-8''${encodeURIComponent(rows[0].filename)}`);
     res.setHeader('Cache-Control', 'private, max-age=31536000, immutable');
     res.sendFile(storage.absPath(rows[0].stored_path));
   }));

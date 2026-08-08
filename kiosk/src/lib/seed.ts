@@ -11,7 +11,7 @@
  * has assigned different version ids to the same documents.
  */
 import type { Manifest } from './types';
-import { DEFAULT_SETTINGS } from './types';
+import { DEFAULT_SETTINGS, allFiles } from './types';
 import * as store from './store';
 import { readBundledPdf } from './pdfBytes';
 import { getLastSync } from './sync';
@@ -84,29 +84,36 @@ export async function importSeed(
 
   for (const doc of manifest.documents) {
     const label = doc.titleBg || doc.titleEn || doc.id;
-    try {
-      // Validated against the length the manifest recorded at build time, so a short
-      // read is rejected here instead of surfacing later as an unopenable document.
-      const read = await readBundledPdf(doc.versionId, doc.sizeBytes);
-      if ('error' in read) throw new Error(read.error);
-      await store.putFile({
-        versionId: doc.versionId,
-        documentId: doc.id,
-        bytes: read.bytes,
-        sizeBytes: read.bytes.byteLength,
-        sha256: doc.sha256,
-        cachedAt: new Date().toISOString(),
-      });
-      embedded.push(doc);
-    } catch (e) {
-      // Skip it rather than abort: readable documents beat none. A later sync against
-      // the server fills in whatever is missing. The reason is kept for diagnosis.
-      rejected.push({
-        title: label,
-        versionId: doc.versionId,
-        reason: (e as Error)?.message?.slice(0, 180) || 'неизвестна грешка',
-      });
+    // A document may ship a Bulgarian and an English PDF. One of them failing to read
+    // should not cost us the other, so each is imported on its own; the document is kept
+    // as long as at least one edition made it in.
+    let anyGood = false;
+    for (const file of allFiles(doc)) {
+      try {
+        // Validated against the length the manifest recorded at build time, so a short
+        // read is rejected here instead of surfacing later as an unopenable document.
+        const read = await readBundledPdf(file.versionId, file.sizeBytes);
+        if ('error' in read) throw new Error(read.error);
+        await store.putFile({
+          versionId: file.versionId,
+          documentId: doc.id,
+          bytes: read.bytes,
+          sizeBytes: read.bytes.byteLength,
+          sha256: file.sha256,
+          cachedAt: new Date().toISOString(),
+        });
+        anyGood = true;
+      } catch (e) {
+        // Skip it rather than abort: readable documents beat none. A later sync against
+        // the server fills in whatever is missing. The reason is kept for diagnosis.
+        rejected.push({
+          title: label,
+          versionId: file.versionId,
+          reason: (e as Error)?.message?.slice(0, 180) || 'неизвестна грешка',
+        });
+      }
     }
+    if (anyGood) embedded.push(doc);
     done += 1;
     onProgress?.({ done, total });
   }
