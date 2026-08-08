@@ -45,18 +45,28 @@ function generateDeviceKey() {
   return { key: `sk_${prefix}_${secret}`, prefix };
 }
 
+// The secret is base64url, whose alphabet includes '_' — so the key cannot be parsed by
+// splitting on '_'. Doing that rejected every key whose secret happened to contain one,
+// which is about 40% of them. Match the prefix positionally instead and treat the whole
+// remainder as the secret. The stored hash covers the entire key, so keys already issued
+// keep working.
+const DEVICE_KEY_RE = /^sk_([0-9a-f]{8})_(.+)$/;
+
 async function requireDevice(req, _res, next) {
-  const key = req.headers['x-device-key'];
-  if (!key) return next(httpError(401, 'NO_DEVICE_KEY', 'Липсва ключ на устройството.'));
-  const parts = String(key).split('_');
-  if (parts.length !== 3)
+  const raw = req.headers['x-device-key'];
+  if (!raw) return next(httpError(401, 'NO_DEVICE_KEY', 'Липсва ключ на устройството.'));
+  // Typed on a touch keyboard or pasted from the admin panel: tolerate stray whitespace
+  // rather than answering "invalid key" for an invisible trailing newline.
+  const key = String(raw).trim();
+  const match = DEVICE_KEY_RE.exec(key);
+  if (!match)
     return next(httpError(401, 'BAD_DEVICE_KEY', 'Невалиден ключ на устройството.'));
   const { rows } = await q(
     'SELECT * FROM devices WHERE key_prefix = $1 AND revoked = FALSE',
-    [parts[1]]
+    [match[1]]
   );
   for (const d of rows) {
-    if (await bcrypt.compare(String(key), d.key_hash)) {
+    if (await bcrypt.compare(key, d.key_hash)) {
       req.device = { id: d.id, name: d.name };
       return next();
     }
