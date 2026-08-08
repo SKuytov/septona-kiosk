@@ -10,6 +10,7 @@ ok()   { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
 bad()  { FAIL=$((FAIL+1)); printf '  FAIL %s\n' "$1"; }
 check(){ if [ "$2" = "$3" ]; then ok "$1"; else bad "$1 (want '$3', got '$2')"; fi; }
 has()  { if grep -qF -- "$2" "$3"; then ok "$1"; else bad "$1 — missing '$2'"; fi; }
+hasnt(){ if grep -qF -- "$2" "$3"; then bad "$1 — unexpected '$2'"; else ok "$1"; fi; }
 
 rm -rf "$ROOT"; mkdir -p "$ROOT/bin"
 BIN="$ROOT/bin"
@@ -94,6 +95,24 @@ RC=$(run "$ROOT/wrap" 1)
 check "wrapper input exits 0" "$RC" 0
 has "descends"            "descending into wrapper" "$ROOT/out"
 has "finds 4 categories"  "4 categories"            "$ROOT/out"
+
+echo "== 7b. a mistyped filename names the real one"
+# Reported: `import-docs.sh ~/KIOSK_DOCS.zip` when the file is KIOSK_DOCS_.zip.
+TD="$ROOT/typo"; mkdir -p "$TD"
+cp "$ZIP" "$TD/KIOSK_DOCS_.zip"; : > "$TD/unrelated.zip"
+OUT="$ROOT/typo.out"
+bash "$SRC" "$TD/KIOSK_DOCS.zip" > "$OUT" 2>&1; RC=$?
+check "mistyped name exits 1" "$RC" 1
+has "repeats what was asked for" "KIOSK_DOCS.zip" "$OUT"
+has "names the real file"       "KIOSK_DOCS_.zip" "$OUT"
+has "lists the other archive"   "unrelated.zip" "$OUT"
+
+echo "== 7c. no hint when there is nothing to suggest"
+ED="$ROOT/nozips"; mkdir -p "$ED"
+bash "$SRC" "$ED/missing.zip" > "$ROOT/nozips.out" 2>&1 || true
+hasnt "no empty archive list" "Archives found" "$ROOT/nozips.out"
+bash "$SRC" "/definitely/not/here.zip" > "$ROOT/nodir.out" 2>&1 || true
+has "still reports the path" "not/here.zip" "$ROOT/nodir.out"
 
 echo "== 8. an empty folder is refused"
 mkdir -p "$ROOT/empty/sub"

@@ -35,7 +35,26 @@ die()  { printf '\n%s !! %s%s\n\n' "$R" "$1" "$N" >&2; exit 1; }
 
 SOURCE="${1:-}"
 [ -n "$SOURCE" ] || die "Usage: sudo bash $0 <KIOSK_DOCS.zip | folder>"
-[ -e "$SOURCE" ] || die "No such file or folder: $SOURCE"
+# A wrong path is nearly always a small typo in a long filename. Rather than only
+# saying "not found", list the archives actually sitting next to it so the real name
+# is obvious. Every assignment below is written so it cannot fail under `set -e`.
+if [ ! -e "$SOURCE" ]; then
+  MSG="No such file or folder: ${SOURCE}"
+  PARENT="$(dirname -- "$SOURCE")"
+  if [ -d "$PARENT" ]; then
+    shopt -s nullglob nocaseglob
+    CANDIDATES=("$PARENT"/*.zip)
+    shopt -u nullglob nocaseglob
+    if [ ${#CANDIDATES[@]} -gt 0 ]; then
+      MSG="${MSG}"$'\n\n     Archives found in '"${PARENT}"':'
+      for f in "${CANDIDATES[@]:0:10}"; do
+        MSG="${MSG}"$'\n       '"$f"
+      done
+      MSG="${MSG}"$'\n\n     Note the exact name \xe2\x80\x94 quote it if it contains spaces.'
+    fi
+  fi
+  die "$MSG"
+fi
 [ -d "$INSTALL_DIR" ] || die "Installation not found at $INSTALL_DIR. Set INSTALL_DIR=…"
 
 cd "$INSTALL_DIR"
