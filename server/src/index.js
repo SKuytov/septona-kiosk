@@ -2,19 +2,25 @@
 const path = require('path');
 const fs = require('fs');
 const express = require('express');
-const cors = require('cors');
 const compression = require('compression');
 
 const { init, q } = require('./db');
 const { loadUser, createUser } = require('./auth');
 const { audit } = require('./audit');
+const security = require('./security');
 
 const app = express();
 const PORT = parseInt(process.env.PORT || '8080', 10);
 
-app.set('trust proxy', true);
+// Which hops may set X-Forwarded-For. `true` trusted every client, so anyone could
+// claim any IP and walk straight past a per-IP rate limit. The tunnel connector runs
+// either on the host (loopback) or in the compose network (a private range), so
+// trusting private hops only is both correct and unspoofable from outside.
+app.disable('x-powered-by');
+app.set('trust proxy', process.env.TRUST_PROXY || 'loopback, linklocal, uniquelocal');
+app.use(security.securityHeaders);
+app.use(security.corsPolicy);
 app.use(compression());
-app.use(cors({ origin: true, exposedHeaders: ['ETag'] }));
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true }));
 // An <iframe>/<embed> preview cannot set an Authorization header, so inline PDF
@@ -31,6 +37,8 @@ app.use((req, _res, next) => {
   }
   next();
 });
+app.use(security.apiRateLimit());
+app.use('/api/auth/login', security.loginRateLimit());
 app.use(loadUser);
 
 app.get('/api/health', async (_req, res) => {
@@ -105,6 +113,8 @@ async function bootstrapAdmin() {
 (async () => {
   await init();
   await bootstrapAdmin();
+  await security.assertSafeToExpose();
+  if (security.IS_PUBLIC) console.log(`[septona-kiosk] публичен адрес: ${security.PUBLIC_ORIGIN}`);
   app.listen(PORT, '0.0.0.0', () => console.log(`[septona-kiosk] listening on :${PORT}`));
 })().catch((e) => {
   console.error('[fatal] startup failed', e);

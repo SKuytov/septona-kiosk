@@ -109,6 +109,28 @@ the build that is genuinely offline-capable.
 
 ---
 
+## Reaching the platform from outside the LAN
+
+The panel is LAN-only out of the box. To publish it on your own domain with a publicly
+trusted certificate, without opening any inbound port:
+
+```bash
+sudo bash /opt/septona-kiosk/deploy/setup-tunnel.sh
+```
+
+The script asks for a Cloudflare Tunnel token and the hostname, writes them to `.env`,
+starts the connector alongside the stack, and verifies the address answers from outside.
+The connector dials out, so nothing has to be forwarded or allowed inbound.
+
+Setting `PUBLIC_ORIGIN` puts the server into internet-facing mode: HSTS, a locked-down
+CSP, CORS restricted to its own origin and the Android app, login throttling, and a
+refusal to start while a weak `JWT_SECRET` or the factory admin password is still in
+use. Step-by-step instructions, including the DNS caveat for subdomains and why a custom
+domain gets through a FortiGate where a `*.ts.net` address often does not, are in
+[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#достъп-от-всеки-компютър).
+
+---
+
 ## How content reaches the panel
 
 ```

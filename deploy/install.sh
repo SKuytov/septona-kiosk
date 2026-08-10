@@ -164,9 +164,17 @@ EOF
 fi
 
 # ----------------------------------------------------------------------- build
+# An installation that has been published through Cloudflare must come back up published,
+# otherwise every update would quietly take the public address offline.
+COMPOSE_ARGS=()
+if grep -qE '^TUNNEL_TOKEN=.+' .env 2>/dev/null; then
+  COMPOSE_ARGS+=(--profile tunnel)
+  info "tunnel configured — it will be started as well"
+fi
+
 step "Building and starting (first run takes a few minutes)"
 docker compose pull --quiet db 2>/dev/null || true
-docker compose up -d --build
+docker compose "${COMPOSE_ARGS[@]}" up -d --build
 
 # ------------------------------------------------------------------- readiness
 step "Waiting for the service to become healthy"
@@ -192,6 +200,13 @@ IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
 # installer here — after everything has already succeeded — on a hand-edited .env.
 ADMIN_EMAIL_OUT="$(grep -E '^ADMIN_EMAIL=' .env 2>/dev/null | cut -d= -f2- || true)"
 ADMIN_PASS_OUT="$(grep -E '^ADMIN_PASSWORD=' .env 2>/dev/null | cut -d= -f2- || true)"
+PUBLIC_ORIGIN_OUT="$(grep -E '^PUBLIC_ORIGIN=' .env 2>/dev/null | cut -d= -f2- || true)"
+if [ -n "$PUBLIC_ORIGIN_OUT" ]; then
+  PUBLIC_LINE="  ${B}From any computer${N}     ${PUBLIC_ORIGIN_OUT}/"
+else
+  PUBLIC_LINE="  ${D}Not published on the internet. To publish it on your own domain:
+      sudo bash ${INSTALL_DIR}/deploy/setup-tunnel.sh${N}"
+fi
 [ -n "$ADMIN_EMAIL_OUT" ] || ADMIN_EMAIL_OUT="admin@septona.local"
 [ -n "$ADMIN_PASS_OUT" ] || ADMIN_PASS_OUT="(вижте ADMIN_PASSWORD в ${INSTALL_DIR}/.env)"
 
@@ -202,7 +217,7 @@ ${G}${B}  Septona Kiosk is running.${N}
   ${B}Management platform${N}   http://${IP}:${HTTP_PORT}/
   ${B}Kiosk in a browser${N}    http://${IP}:${HTTP_PORT}/kiosk/
   ${B}Health check${N}          http://${IP}:${HTTP_PORT}/api/health
-
+${PUBLIC_LINE}
 EOF
 
 if [ "$FRESH_INSTALL" = true ]; then

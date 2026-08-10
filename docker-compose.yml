@@ -43,6 +43,11 @@ services:
       ADMIN_DIST: /app/admin/dist
       ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@septona.local}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-septona-admin}
+      # Set only when the panel is published on the internet through the tunnel, e.g.
+      # https://docs.example.com. It switches on HSTS and makes the server refuse to
+      # start while a forgeable JWT secret or a factory admin password is still in use.
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
     ports:
       - "${HTTP_PORT:-8080}:8080"
     volumes:
@@ -55,6 +60,20 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
+
+  # Publishes the panel on a real hostname with a publicly trusted certificate, without
+  # opening a single inbound port: the connector dials out to Cloudflare and the traffic
+  # comes back down that same connection. Started only when the tunnel profile is
+  # selected, which install.sh does automatically once TUNNEL_TOKEN is in .env.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    profiles: ["tunnel"]
+    depends_on:
+      server:
+        condition: service_healthy
+    # Outbound only. No ports: section, by design.
+    command: tunnel --no-autoupdate --loglevel info run --token ${TUNNEL_TOKEN:?set TUNNEL_TOKEN in .env}
 
 volumes:
   db-data:
